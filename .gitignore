@@ -1,0 +1,9 @@
+node_modules/
+dist/
+generated_bots/
+sessions/
+*.log
+.env
+*.png
+*.jpg
+*.jpeg

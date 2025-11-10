@@ -1,0 +1,45 @@
+.
+├── deepseeks_suggestions.md
+├── .env
+├── generated_bots
+├── package.json
+├── package-lock.json
+├── plan.md
+├── project_structure.txt
+├── README.md
+├── README_USAGE.md
+├── src
+│   ├── core
+│   │   ├── deepseek_client.ts
+│   │   └── html_analyzer.ts
+│   ├── examples
+│   │   └── test_generation.ts
+│   ├── executors
+│   │   └── sandbox_executor.ts
+│   ├── generators
+│   │   ├── bot_generator.ts
+│   │   └── prompt_builder.ts
+│   ├── index.ts
+│   ├── test.ts
+│   ├── types
+│   │   ├── analysis.ts
+│   │   └── bot.ts
+│   └── utils
+│       ├── config.ts
+│       └── file_helpers.ts
+├── test_deepseek.py
+├── tsconfig.json
+├── VISION.md
+└── zzzz
+    ├── api_client.ts
+    ├── browser_manager_playwright.ts
+    ├── browser_manager.ts
+    ├── core_configurations.ts
+    ├── humanization.ts
+    ├── registry.ts
+    ├── seek_impl.ts
+    ├── sessionManager.ts
+    ├── user-bots-config.json
+    └── workflow_engine.ts
+
+9 directories, 33 files
