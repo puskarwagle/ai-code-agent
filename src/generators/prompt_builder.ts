@@ -90,6 +90,9 @@ step_${stepContext.stepNumber}:
 
 Then, output TypeScript implementation:
 
+CRITICAL: Your code MUST use page.waitForSelector() on the FIRST line after try block.
+This is REQUIRED for the execution engine to parse your code.
+
 \`\`\`typescript
 import { Page } from 'playwright';
 
@@ -97,39 +100,27 @@ export async function* function_name_here(ctx: any): AsyncGenerator<string, void
   const page: Page = ctx.page;
 
   try {
-    // 1. Wait for element with fallback chain
-    let element = null;
-    const selectors = ['primary_selector', 'fallback1', 'fallback2'];
-
-    for (const selector of selectors) {
-      try {
-        element = await page.waitForSelector(selector, { timeout: 10000, state: 'visible' });
-        if (element) break;
-      } catch (e) {
-        console.log(\`Selector \${selector} failed, trying fallback...\`);
-      }
-    }
+    // REQUIRED: Use page.waitForSelector as FIRST LINE
+    const element = await page.waitForSelector('your_selector_here', {
+      timeout: 10000,
+      state: 'visible'
+    });
 
     if (!element) {
       yield 'element_not_found';
       return;
     }
 
-    // 2. Perform the action (click, type, etc.)
-    await element.click(); // or .fill(), .selectOption(), etc.
+    // Perform the action
+    await element.click(); // or .fill('value'), .selectOption(), etc.
 
-    // 3. Wait for observable change (new URL, new element, etc.)
-    await page.waitForLoadState('networkidle', { timeout: 10000 });
-    // OR: await page.waitForSelector('[success-indicator]', { timeout: 10000 });
-
-    // 4. Take screenshot for verification
-    await page.screenshot({ path: \`step_${stepContext.stepNumber}_success.png\` });
+    // Wait for change
+    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
 
     yield 'success_event';
 
   } catch (error) {
-    console.error('Step ${stepContext.stepNumber} failed:', error);
-    await page.screenshot({ path: \`step_${stepContext.stepNumber}_error.png\` }).catch(() => {});
+    console.error('Step failed:', error);
 
     if (error.message.includes('timeout')) {
       yield 'timeout';
@@ -139,6 +130,12 @@ export async function* function_name_here(ctx: any): AsyncGenerator<string, void
   }
 }
 \`\`\`
+
+IMPORTANT:
+- ALWAYS use page.waitForSelector('selector', ...) as the FIRST LINE in try block
+- Do NOT use complex selector chains or variables for the primary selector
+- Put the actual selector string directly in waitForSelector()
+- Example: page.waitForSelector('[aria-label="Search"]', ...)
 
 ═══════════════════════════════════════════════════════════════
 NOW GENERATE STEP ${stepContext.stepNumber}

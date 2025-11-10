@@ -63,6 +63,9 @@ export class BotGenerator {
           console.log(`💬 Additional Context: ${options.additionalContext}`);
         }
         console.log('');
+
+        // Display detailed progress summary
+        await this.displayProgressSummary(existingBot, options.additionalContext);
       }
     }
 
@@ -218,6 +221,161 @@ export class BotGenerator {
       console.log('\n💬 I have a few questions to better understand your goal:\n');
       askNext();
     });
+  }
+
+  /**
+   * Display progress summary when continuing a bot
+   */
+  private async displayProgressSummary(
+    bot: BotMetadata,
+    additionalContext?: string
+  ): Promise<void> {
+    console.log('╔═══════════════════════════════════════════════════════════════╗');
+    console.log('║                     PROGRESS SUMMARY                          ║');
+    console.log('╚═══════════════════════════════════════════════════════════════╝\n');
+
+    // What's been done
+    console.log('✅ COMPLETED STEPS:\n');
+    const completedSteps = bot.generated_steps.filter(
+      (_, idx) => idx < bot.current_step - 1
+    );
+
+    if (completedSteps.length === 0) {
+      console.log('   (No steps completed yet - bot just started)\n');
+    } else {
+      completedSteps.forEach((step, idx) => {
+        const status = step.execution_result?.success ? '✅' : '❌';
+        console.log(`   ${idx + 1}. ${status} ${step.action_description}`);
+      });
+      console.log('');
+    }
+
+    // Current state
+    console.log('📍 CURRENT STATE:\n');
+    if (bot.current_step <= bot.total_steps) {
+      const currentStep = bot.generated_steps[bot.current_step - 1];
+      if (currentStep) {
+        console.log(`   Step ${bot.current_step}: ${currentStep.action_description}`);
+        if (currentStep.execution_result?.error) {
+          console.log(`   ⚠️  Last error: ${currentStep.execution_result.error}`);
+        }
+      } else {
+        console.log(`   Ready to generate step ${bot.current_step}`);
+      }
+    } else {
+      console.log('   All steps completed - ready for new workflow');
+    }
+    console.log('');
+
+    // What's next
+    console.log('🎯 RECOMMENDED NEXT ACTIONS:\n');
+
+    // Analyze bot state and provide recommendations
+    const recommendations = this.analyzeAndRecommend(bot, additionalContext);
+    recommendations.forEach((rec, idx) => {
+      console.log(`   ${idx + 1}. ${rec}`);
+    });
+    console.log('');
+
+    // Issues encountered
+    const failedSteps = bot.generated_steps.filter(
+      step => step.execution_result?.success === false
+    );
+
+    if (failedSteps.length > 0) {
+      console.log('⚠️  ISSUES ENCOUNTERED:\n');
+      failedSteps.forEach((step, idx) => {
+        console.log(`   • Step ${step.step_number}: ${step.action_description}`);
+        if (step.execution_result?.error) {
+          console.log(`     Error: ${step.execution_result.error}`);
+        }
+      });
+      console.log('');
+    }
+
+    console.log('─────────────────────────────────────────────────────────────\n');
+    console.log('💡 The bot will continue from where it left off.\n');
+
+    if (additionalContext) {
+      console.log(`📝 Your additional guidance: "${additionalContext}"\n`);
+    }
+  }
+
+  /**
+   * Analyze bot state and provide smart recommendations
+   */
+  private analyzeAndRecommend(
+    bot: BotMetadata,
+    additionalContext?: string
+  ): string[] {
+    const recommendations: string[] = [];
+
+    // ALWAYS start with the goal
+    recommendations.push('🎯 GOAL: Find and apply to jobs');
+
+    // Check if bot is stuck (multiple failures on same step)
+    const recentSteps = bot.generated_steps.slice(-3);
+    const allFailed = recentSteps.every(step => step.execution_result?.success === false);
+
+    if (allFailed && recentSteps.length > 0) {
+      recommendations.push('🔧 Bot appears stuck - rethink the approach');
+      recommendations.push('💬 Provide specific guidance or let AI analyze HTML again');
+      return recommendations;
+    }
+
+    // Check completion status
+    if (bot.status === 'completed') {
+      recommendations.push('✨ Bot completed - jobs should be applied to');
+      recommendations.push('📊 Review results and check applications');
+      return recommendations;
+    }
+
+    // Check if additional guidance provided
+    if (additionalContext) {
+      recommendations.push(`📝 User guidance: "${additionalContext}"`);
+      recommendations.push('🤖 Generate next micro-plan with this context');
+      return recommendations;
+    }
+
+    // Analyze what's actually been done
+    const hasNavigated = bot.generated_steps.some(s =>
+      s.action_description.toLowerCase().includes('navigate') ||
+      s.action_description.toLowerCase().includes('homepage')
+    );
+
+    const hasSearched = bot.generated_steps.some(s =>
+      s.action_description.toLowerCase().includes('search') ||
+      s.action_description.toLowerCase().includes('jobs')
+    );
+
+    const hasCollectedCards = bot.generated_steps.some(s =>
+      s.action_description.toLowerCase().includes('card') ||
+      s.action_description.toLowerCase().includes('collect')
+    );
+
+    const hasApplied = bot.generated_steps.some(s =>
+      s.action_description.toLowerCase().includes('apply')
+    );
+
+    // Give recommendations based on what's actually missing
+    if (!hasNavigated) {
+      recommendations.push('📍 Next: Navigate to job site homepage');
+      recommendations.push('🔍 Analyze the page to understand structure');
+    } else if (!hasSearched) {
+      recommendations.push('🔍 Next: Find and use search functionality');
+      recommendations.push('⌨️  Enter job search criteria');
+    } else if (!hasCollectedCards) {
+      recommendations.push('📋 Next: Find job cards on the page');
+      recommendations.push('🤖 Use AI-powered pattern detection');
+    } else if (!hasApplied) {
+      recommendations.push('✅ Next: Click on job cards and apply');
+      recommendations.push('🚀 Detect Quick Apply vs Regular Apply');
+    } else {
+      recommendations.push('🔄 Next: Continue applying to more jobs');
+      recommendations.push('📄 Move to next page if needed');
+    }
+
+    return recommendations;
   }
 
   /**
@@ -440,97 +598,175 @@ export class BotGenerator {
     return steps;
   }
 
+  /**
+   * Generate workflow using ITERATIVE MICRO-PLANS
+   * Makes small plans (3-5 steps), executes them, makes another plan, repeat
+   */
   private async generateWorkflowPhase(context: BotGenerationContext, additionalContext?: string): Promise<GeneratedStepInfo[]> {
     const steps: GeneratedStepInfo[] = [];
-    let stepNumber = context.generated_steps.length + 1;
-    const maxSteps = 10; // Prevent infinite loops
+    const maxMicroPlans = 20; // Max 20 micro-plans (20 * 5 = 100 steps max)
+    let microPlanCount = 0;
 
-    while (stepNumber <= maxSteps) {
-      console.log(`🔧 Step ${stepNumber}: Generating next action...`);
+    console.log('\n╔═══════════════════════════════════════════════════════════════╗');
+    console.log('║           ITERATIVE MICRO-PLAN EXECUTION                      ║');
+    console.log('╚═══════════════════════════════════════════════════════════════╝\n');
 
-      // Get current page state
+    console.log('🎯 GOAL: Find and apply to jobs');
+    console.log('📋 Strategy: Make small plans (3-5 steps), execute, repeat\n');
+
+    while (microPlanCount < maxMicroPlans) {
+      microPlanCount++;
+
+      console.log(`\n═══════════════════════════════════════════════════════`);
+      console.log(`MICRO-PLAN #${microPlanCount}`);
+      console.log(`═══════════════════════════════════════════════════════\n`);
+
+      // Get current state
+      const currentPage = this.sandbox.getPage();
       const currentPageState = await this.sandbox.capturePageState();
+      const completedActions = context.generated_steps.map(s => s.action_description);
 
-      // Check if intent is fulfilled
+      // Check if goal achieved
       const isFulfilled = await this.deepseek.isIntentFulfilled(context.intent, {
         title: currentPageState.title,
         url: currentPageState.url,
-        visible_text: await this.sandbox.getPage().innerText('body').catch(() => '')
+        visible_text: await currentPage.innerText('body').catch(() => '')
       });
 
       if (isFulfilled) {
-        console.log('🎉 Intent fulfilled! Stopping generation.\n');
+        console.log('🎉 GOAL ACHIEVED! Jobs should be applied to.\n');
         break;
       }
 
-      // Analyze current page (use existing page to preserve state)
-      const currentPage = this.sandbox.getPage();
-      const pageAnalysis = await this.analyzer.analyze(currentPageState.url, currentPage);
+      // Analyze page
+      console.log('🔍 Analyzing current page...');
+      let pageAnalysis = await this.analyzer.analyze(currentPageState.url, currentPage);
 
-      // Build prompt for next step
-      const completedActions = context.generated_steps.map(s => s.action_description);
+      // If analyzer found very few elements, use AI fallback
+      const totalElements =
+        pageAnalysis.interactive_elements.buttons.length +
+        pageAnalysis.interactive_elements.inputs.length +
+        pageAnalysis.interactive_elements.links.length;
 
-      let contextMessage = `Continue working towards: "${context.intent}"`;
-      if (additionalContext) {
-        contextMessage += `\n\nUSER GUIDANCE: ${additionalContext}`;
+      if (totalElements < 5) {
+        console.log('⚠️  HTML Analyzer found few elements, using AI fallback...');
+        const html = await currentPage.content();
+        const aiAnalysis = await this.deepseek.analyzeRawHTML(
+          html,
+          context.intent,
+          completedActions[completedActions.length - 1] || 'Starting'
+        );
+
+        console.log(`AI Analysis: ${aiAnalysis.can_proceed ? '✅ Can proceed' : '❌ Cannot proceed'}`);
+        console.log(`Next actions: ${aiAnalysis.next_actions.join(', ')}`);
+        console.log(`Selectors found: ${aiAnalysis.selectors_found.length}`);
+
+        if (!aiAnalysis.can_proceed) {
+          console.log('❌ AI says cannot proceed. Stopping.\n');
+          break;
+        }
       }
 
-      const stepPrompt = this.promptBuilder.buildStepPrompt(
+      // Create micro-plan (3-5 steps)
+      console.log('🤖 Creating micro-plan (3-5 steps)...\n');
+      const microPlan = await this.deepseek.createMicroPlan(
         context.intent,
+        currentPageState.url,
         pageAnalysis,
-        {
-          stepNumber,
-          previousAction: completedActions[completedActions.length - 1],
-          context: contextMessage,
-          completedSteps: completedActions
-        }
+        completedActions
       );
 
-      // Generate step
-      const generatedStep = await this.deepseek.generateStep(stepPrompt);
-
-      // Try to execute the step
-      let executionResult = await this.executeGeneratedStep(
-        generatedStep.typescript,
-        this.extractFunctionName(generatedStep.typescript)
-      );
-
-      // If step failed, try to fix it
-      if (!executionResult.success) {
-        console.log('⚠️  Step failed, attempting fix...');
-        const fixedStep = await this.fixFailedStep(generatedStep, executionResult);
-
-        if (fixedStep) {
-          generatedStep.typescript = fixedStep.typescript;
-          executionResult = await this.executeGeneratedStep(
-            fixedStep.typescript,
-            this.extractFunctionName(fixedStep.typescript)
-          );
+      // Display micro-plan as TODO
+      console.log('📝 TODO (this micro-plan):\n');
+      microPlan.steps.forEach((step, idx) => {
+        console.log(`   ☐ ${idx + 1}. ${step.action}`);
+        if (step.selector) {
+          console.log(`      Selector: ${step.selector}`);
         }
-      }
+        console.log(`      Test: ${step.test_criteria}`);
+        console.log('');
+      });
+      console.log(`⏱️  Estimated time: ${microPlan.estimated_time}\n`);
 
-      if (executionResult.success) {
-        console.log(`✅ Step ${stepNumber} complete\n`);
+      // Ask user approval for this micro-plan
+      const approved = await this.confirmMicroPlan();
 
-        steps.push({
-          step_number: stepNumber,
-          yaml: generatedStep.yaml,
-          typescript: generatedStep.typescript,
-          action_description: this.extractActionDescription(generatedStep),
-          execution_result: executionResult
-        });
-
-        stepNumber++;
-      } else {
-        console.log(`❌ Step ${stepNumber} failed after retry. Stopping.\n`);
+      if (!approved) {
+        console.log('❌ Micro-plan rejected. Stopping.\n');
         break;
       }
 
-      // Small delay between steps
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Execute each step in micro-plan
+      for (const planStep of microPlan.steps) {
+        console.log(`\n🔧 Executing: ${planStep.action}...`);
+
+        // Generate code for this step
+        const completedSteps = context.generated_steps.map(s => s.action_description);
+        const stepPrompt = this.promptBuilder.buildStepPrompt(
+          context.intent,
+          pageAnalysis,
+          {
+            stepNumber: context.generated_steps.length + 1,
+            previousAction: completedSteps[completedSteps.length - 1],
+            context: planStep.action + (planStep.selector ? `\nUse selector: ${planStep.selector}` : ''),
+            completedSteps
+          }
+        );
+
+        const generatedStep = await this.deepseek.generateStep(stepPrompt);
+
+        // Execute
+        const executionResult = await this.executeGeneratedStep(
+          generatedStep.typescript,
+          this.extractFunctionName(generatedStep.typescript)
+        );
+
+        if (executionResult.success) {
+          console.log(`✅ ${planStep.action} - SUCCESS\n`);
+
+          steps.push({
+            step_number: context.generated_steps.length + 1,
+            yaml: generatedStep.yaml,
+            typescript: generatedStep.typescript,
+            action_description: planStep.action,
+            execution_result: executionResult
+          });
+
+          context.generated_steps.push(steps[steps.length - 1]);
+        } else {
+          console.log(`❌ ${planStep.action} - FAILED: ${executionResult.error}\n`);
+          console.log('🔄 Skipping rest of micro-plan and creating new one...\n');
+          break; // Skip rest of this micro-plan, make new one
+        }
+
+        // Small delay
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      // Save progress after each micro-plan
+      await this.saveBotProgress(context, context.url, context.intent);
     }
 
     return steps;
+  }
+
+  /**
+   * Confirm micro-plan with user
+   */
+  private async confirmMicroPlan(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+
+      rl.question('👉 Execute this micro-plan? [Y/n]: ', (answer) => {
+        rl.close();
+        const approved = !answer.trim() || answer.toLowerCase().trim().startsWith('y');
+        console.log('');
+        resolve(approved);
+      });
+    });
   }
 
   private async executeGeneratedStep(
@@ -562,27 +798,49 @@ export class BotGenerator {
           // Determine action based on function name or element type
           const tagName = await element.evaluate(el => el.tagName.toLowerCase());
 
+          // Determine action type
+          let actionTaken = false;
+
           if (functionName.includes('click') || functionName.includes('button') || tagName === 'button' || tagName === 'a') {
             console.log(`👆 Clicking element...`);
             await element.click();
             await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-          } else if (functionName.includes('fill') || functionName.includes('input') || tagName === 'input' || tagName === 'textarea') {
+            actionTaken = true;
+          } else if (functionName.includes('fill') || functionName.includes('type') || functionName.includes('input') || tagName === 'input' || tagName === 'textarea') {
             console.log(`⌨️  Filling input...`);
             // Extract value from code if present
-            const valueMatch = typescript.match(/fill\(['"]([^'"]+)['"]\)/);
-            const value = valueMatch ? valueMatch[1] : 'test input';
+            const valueMatch = typescript.match(/fill\(['"]([^'"]+)['"]\)/) || typescript.match(/type\(['"]([^'"]+)['"]\)/);
+            const value = valueMatch ? valueMatch[1] : 'software engineer';
             await element.fill(value);
+            actionTaken = true;
+          } else if (functionName.includes('press') && functionName.includes('enter')) {
+            console.log(`⏎ Pressing Enter...`);
+            await element.press('Enter');
+            await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+            actionTaken = true;
           } else if (functionName.includes('select') || tagName === 'select') {
             console.log(`📋 Selecting option...`);
             await element.selectOption({ index: 0 });
+            actionTaken = true;
           } else {
-            console.log(`👀 Element found, waiting...`);
+            console.log(`👀 Element found but no clear action determined`);
+            console.log(`   Function name: ${functionName}, Tag: ${tagName}`);
+          }
+
+          if (!actionTaken) {
+            console.log(`⚠️  No action was taken on the element`);
+            return {
+              success: false,
+              error: 'Element found but no action could be determined',
+              event: 'no_action',
+              page_state: await this.sandbox.capturePageState()
+            };
           }
 
           // Wait a bit for any dynamic changes
-          await new Promise(resolve => setTimeout(resolve, 1500));
+          await new Promise(resolve => setTimeout(resolve, 2000));
 
-          console.log(`✅ Step executed successfully`);
+          console.log(`✅ Action completed successfully`);
 
           return {
             success: true,
@@ -622,10 +880,12 @@ export class BotGenerator {
           throw error;
         }
       } else {
-        console.log(`⏭️  No selector found, skipping execution`);
+        console.log(`⚠️  No selector found in generated code`);
+        console.log(`❌ Cannot execute step - no selector to interact with`);
         return {
-          success: true,
-          event: 'success_event',
+          success: false,
+          error: 'No selector found in generated code',
+          event: 'element_not_found',
           page_state: await this.sandbox.capturePageState()
         };
       }
@@ -642,16 +902,41 @@ export class BotGenerator {
   private extractPrimarySelector(typescript: string): string | null {
     // Try to find waitForSelector or similar
     const selectorMatch = typescript.match(/waitForSelector\(['"]([^'"]+)['"]/);
-    if (selectorMatch) return selectorMatch[1];
+    if (selectorMatch) {
+      console.log(`   Found waitForSelector: ${selectorMatch[1]}`);
+      return selectorMatch[1];
+    }
 
     // Try to find locator
     const locatorMatch = typescript.match(/locator\(['"]([^'"]+)['"]/);
-    if (locatorMatch) return locatorMatch[1];
+    if (locatorMatch) {
+      console.log(`   Found locator: ${locatorMatch[1]}`);
+      return locatorMatch[1];
+    }
 
-    // Try to find click
+    // Try to find page.locator
+    const pageLocatorMatch = typescript.match(/page\.locator\(['"]([^'"]+)['"]/);
+    if (pageLocatorMatch) {
+      console.log(`   Found page.locator: ${pageLocatorMatch[1]}`);
+      return pageLocatorMatch[1];
+    }
+
+    // Try to find click/fill directly
+    const directMatch = typescript.match(/(?:click|fill)\(['"]([^'"]+)['"]/);
+    if (directMatch) {
+      console.log(`   Found in click/fill: ${directMatch[1]}`);
+      return directMatch[1];
+    }
+
+    // Try to find $$ selector
     const clickMatch = typescript.match(/\$\$?\(['"]([^'"]+)['"]\)/);
-    if (clickMatch) return clickMatch[1];
+    if (clickMatch) {
+      console.log(`   Found $$ selector: ${clickMatch[1]}`);
+      return clickMatch[1];
+    }
 
+    console.log(`   ⚠️  Could not extract selector from generated code`);
+    console.log(`   Generated code:\n${typescript.substring(0, 500)}...`);
     return null;
   }
 

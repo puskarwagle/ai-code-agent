@@ -508,6 +508,179 @@ Refine the plan based on this feedback. Output the updated plan in the same JSON
   }
 
   /**
+   * Analyze raw HTML when HTML analyzer fails
+   * This is the fallback - send HTML directly to AI
+   */
+  async analyzeRawHTML(
+    html: string,
+    goal: string,
+    currentStep: string
+  ): Promise<{
+    can_proceed: boolean;
+    next_actions: string[];
+    selectors_found: Array<{ purpose: string; selector: string; confidence: number }>;
+    warnings: string[];
+  }> {
+    // Truncate HTML to avoid token limits (keep first 50k chars)
+    const truncatedHTML = html.substring(0, 50000);
+
+    const messages: DeepSeekMessage[] = [
+      {
+        role: 'system',
+        content: `You analyze raw HTML to determine what actions are possible.
+
+CRITICAL RULES:
+1. Focus on INTERACTIVE elements (buttons, inputs, links, forms)
+2. Find patterns in the HTML (repeating structures)
+3. Suggest specific selectors that will work
+4. Be honest about what's possible vs not possible
+
+OUTPUT FORMAT: JSON only
+{
+  "can_proceed": true|false,
+  "next_actions": ["Action 1", "Action 2", "Action 3"],
+  "selectors_found": [
+    { "purpose": "search_input", "selector": "input[name='keywords']", "confidence": 90 },
+    { "purpose": "submit_button", "selector": "button[type='submit']", "confidence": 85 }
+  ],
+  "warnings": ["CAPTCHA detected", "Login required", etc.]
+}`
+      },
+      {
+        role: 'user',
+        content: `
+GOAL: ${goal}
+CURRENT STEP: ${currentStep}
+
+HTML (truncated):
+\`\`\`html
+${truncatedHTML}
+\`\`\`
+
+Analyze this HTML and tell me:
+1. Can we proceed with the goal?
+2. What actions can we take next?
+3. What selectors should we use?
+4. Any warnings/blockers?`
+      }
+    ];
+
+    const response = await this.chat(messages, { temperature: 0.3, max_tokens: 2000 });
+
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+    } catch (e) {
+      console.error('Failed to parse HTML analysis:', e);
+    }
+
+    // Fallback
+    return {
+      can_proceed: false,
+      next_actions: ['Manual analysis required'],
+      selectors_found: [],
+      warnings: ['Failed to analyze HTML automatically']
+    };
+  }
+
+  /**
+   * Create a MICRO-plan (3-5 steps only)
+   * This is called repeatedly throughout the workflow
+   */
+  async createMicroPlan(
+    goal: string,
+    currentState: string,
+    pageAnalysis: any,
+    completedSteps: string[]
+  ): Promise<{
+    steps: Array<{
+      step_number: number;
+      action: string;
+      selector?: string;
+      test_criteria: string;
+    }>;
+    estimated_time: string;
+  }> {
+    const interactiveElements = pageAnalysis.interactive_elements || {};
+    const buttons = interactiveElements.buttons?.slice(0, 10).map((b: any) => b.text || b.selector) || [];
+    const inputs = interactiveElements.inputs?.slice(0, 10).map((i: any) => i.label || i.selector) || [];
+
+    const messages: DeepSeekMessage[] = [
+      {
+        role: 'system',
+        content: `You create MICRO-PLANS with 3-5 SMALL, TESTABLE steps.
+
+CRITICAL RULES:
+1. ONLY 3-5 steps max (not 10, not 20)
+2. Each step must be ONE atomic action
+3. Each step must be TESTABLE (we can verify it worked)
+4. Provide specific selectors when possible
+5. Think about NEXT micro-plan after this one
+
+OUTPUT FORMAT: JSON only
+{
+  "steps": [
+    {
+      "step_number": 1,
+      "action": "Find search input field",
+      "selector": "input[placeholder*='job' i]",
+      "test_criteria": "Input field is visible and enabled"
+    },
+    {
+      "step_number": 2,
+      "action": "Enter search keywords",
+      "selector": "input[placeholder*='job' i]",
+      "test_criteria": "Input has value 'software engineer'"
+    }
+  ],
+  "estimated_time": "30 seconds"
+}`
+      },
+      {
+        role: 'user',
+        content: `
+OVERALL GOAL: ${goal}
+CURRENT STATE: ${currentState}
+
+COMPLETED SO FAR:
+${completedSteps.map((s, i) => `${i + 1}. ${s}`).join('\n') || 'Nothing yet'}
+
+AVAILABLE ELEMENTS:
+Buttons: ${buttons.slice(0, 5).join(', ') || 'None'}
+Inputs: ${inputs.slice(0, 5).join(', ') || 'None'}
+
+Create a MICRO-PLAN with 3-5 small steps to move closer to the goal.
+Think: What's the NEXT logical thing to do from current state?`
+      }
+    ];
+
+    const response = await this.chat(messages, { temperature: 0.4, max_tokens: 1000 });
+
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+    } catch (e) {
+      console.error('Failed to parse micro-plan:', e);
+    }
+
+    // Fallback
+    return {
+      steps: [
+        {
+          step_number: 1,
+          action: 'Analyze current page',
+          test_criteria: 'Page analysis complete'
+        }
+      ],
+      estimated_time: 'Unknown'
+    };
+  }
+
+  /**
    * Find alternative strategy when current approach fails
    */
   async findAlternativeStrategy(

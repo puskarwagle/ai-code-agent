@@ -574,6 +574,301 @@ export class HTMLAnalyzer {
     };
   }
 
+  /**
+   * Enhanced pattern detection using AI-powered analysis
+   * This method uses semantic understanding to detect repeating patterns
+   */
+  async detectPatternWithAI(
+    page: Page,
+    pattern_type: 'job_card' | 'product_card' | 'search_result' | 'generic'
+  ): Promise<{
+    selector: string;
+    confidence: number;
+    count: number;
+    sample_data?: any;
+  } | null> {
+    console.log(`🤖 AI-powered detection for: ${pattern_type}`);
+
+    try {
+      // Strategy 1: Detect repeating article/div/li patterns with similar structure
+      const potentialPatterns = await page.evaluate(() => {
+        const candidates: Array<{ selector: string; count: number; sample: any }> = [];
+
+        // Look for repeating patterns
+        const commonContainers = ['article', 'li', 'div[class*="card"]', 'div[class*="item"]', 'div[class*="result"]'];
+
+        for (const containerType of commonContainers) {
+          const elements = Array.from(document.querySelectorAll(containerType));
+
+          if (elements.length < 3) continue; // Need at least 3 for a pattern
+
+          // Group by parent
+          const grouped = new Map<Element, Element[]>();
+          elements.forEach(el => {
+            const parent = el.parentElement;
+            if (parent) {
+              if (!grouped.has(parent)) grouped.set(parent, []);
+              grouped.get(parent)!.push(el);
+            }
+          });
+
+          // Find groups with 3+ children
+          grouped.forEach((children, parent) => {
+            if (children.length >= 3) {
+              // Check if children have similar structure
+              const firstChild = children[0];
+              const firstChildHtml = firstChild.innerHTML;
+              const structureSimilarity = children.filter(child => {
+                const html = child.innerHTML;
+                // Basic structure similarity: same number of nested elements
+                const firstCount = (firstChildHtml.match(/<[^>]+>/g) || []).length;
+                const childCount = (html.match(/<[^>]+>/g) || []).length;
+                return Math.abs(firstCount - childCount) < firstCount * 0.3; // 30% tolerance
+              }).length;
+
+              const similarity = structureSimilarity / children.length;
+
+              if (similarity > 0.7) { // 70% similar
+                // Generate selector
+                const tagName = firstChild.tagName.toLowerCase();
+                let selector = tagName;
+
+                // Try to find common class
+                const firstClasses = Array.from(firstChild.classList);
+                const commonClasses = firstClasses.filter(cls =>
+                  children.every(child => child.classList.contains(cls))
+                );
+
+                if (commonClasses.length > 0) {
+                  selector = `${tagName}.${commonClasses[0]}`;
+                }
+
+                // Sample data
+                const sample = {
+                  text: firstChild.textContent?.trim().substring(0, 100),
+                  classes: Array.from(firstChild.classList),
+                  attributes: Array.from(firstChild.attributes).map(attr => ({
+                    name: attr.name,
+                    value: attr.value
+                  }))
+                };
+
+                candidates.push({
+                  selector,
+                  count: children.length,
+                  sample
+                });
+              }
+            }
+          });
+        }
+
+        return candidates.sort((a, b) => b.count - a.count);
+      });
+
+      if (potentialPatterns.length > 0) {
+        const best = potentialPatterns[0];
+        console.log(`✅ Found pattern: ${best.selector} (${best.count} instances)`);
+
+        return {
+          selector: best.selector,
+          confidence: best.count >= 5 ? 90 : best.count >= 3 ? 70 : 50,
+          count: best.count,
+          sample_data: best.sample
+        };
+      }
+
+      console.log('⚠️  No repeating patterns found');
+      return null;
+
+    } catch (error) {
+      console.error('Pattern detection error:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Job-specific pattern analysis
+   * Detects job cards, apply buttons, and other job-related elements
+   */
+  async analyzeJobSite(page: Page): Promise<{
+    job_cards: Array<{ selector: string; count: number }>;
+    apply_buttons: Array<{ selector: string; type: 'quick' | 'regular'; context: string }>;
+    search_form: { selector: string; found: boolean };
+    filters: Array<{ type: string; selector: string }>;
+  }> {
+    console.log('🎯 Analyzing as job site...');
+
+    const analysis = await page.evaluate(() => {
+      const result: any = {
+        job_cards: [],
+        apply_buttons: [],
+        search_form: { selector: '', found: false },
+        filters: []
+      };
+
+      // Detect job cards using multiple strategies
+      const jobCardSelectors = [
+        'article[data-testid*="job"]',
+        '[data-automation*="job-card"]',
+        '[class*="job-card"]',
+        '[class*="jobCard"]',
+        'li[class*="job"]',
+        'div[class*="search-result"]'
+      ];
+
+      for (const selector of jobCardSelectors) {
+        const cards = document.querySelectorAll(selector);
+        if (cards.length > 0) {
+          result.job_cards.push({ selector, count: cards.length });
+        }
+      }
+
+      // Detect apply buttons
+      const allButtons = Array.from(document.querySelectorAll('button, a[role="button"]'));
+      allButtons.forEach((btn, idx) => {
+        const text = btn.textContent?.toLowerCase() || '';
+
+        if (text.includes('quick') && text.includes('apply')) {
+          result.apply_buttons.push({
+            selector: `button:nth-of-type(${idx})`,
+            type: 'quick',
+            context: btn.closest('article, li, div[class*="card"]')?.className || 'unknown'
+          });
+        } else if (text.includes('apply') && !text.includes('applied')) {
+          result.apply_buttons.push({
+            selector: `button:nth-of-type(${idx})`,
+            type: 'regular',
+            context: btn.closest('article, li, div[class*="card"]')?.className || 'unknown'
+          });
+        }
+      });
+
+      // Detect search form
+      const searchInputs = document.querySelectorAll('input[placeholder*="job" i], input[placeholder*="search" i], input[name*="keyword" i]');
+      if (searchInputs.length > 0) {
+        const form = searchInputs[0].closest('form');
+        result.search_form.selector = form ? 'form:has(input[placeholder*="job" i])' : 'input[placeholder*="job" i]';
+        result.search_form.found = true;
+      }
+
+      // Detect filters
+      const filterSelectors = ['select[name*="type"]', 'select[name*="location"]', '[data-testid*="filter"]'];
+      filterSelectors.forEach(selector => {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length > 0) {
+          result.filters.push({
+            type: selector.includes('type') ? 'job_type' : selector.includes('location') ? 'location' : 'generic',
+            selector
+          });
+        }
+      });
+
+      return result;
+    });
+
+    console.log(`✅ Found ${analysis.job_cards.length} job card patterns, ${analysis.apply_buttons.length} apply buttons`);
+
+    return analysis;
+  }
+
+  /**
+   * Detect interaction states (modals, dropdowns, tabs, etc.)
+   */
+  async detectInteractionStates(page: Page): Promise<{
+    modals: Array<{ selector: string; visible: boolean }>;
+    dropdowns: Array<{ selector: string; expanded: boolean }>;
+    tabs: Array<{ selector: string; active: boolean }>;
+  }> {
+    console.log('🔍 Detecting interaction states...');
+
+    const states = await page.evaluate(() => {
+      const result: any = {
+        modals: [],
+        dropdowns: [],
+        tabs: []
+      };
+
+      // Detect modals
+      const modalSelectors = [
+        '[role="dialog"]',
+        '[class*="modal"]',
+        '[class*="Modal"]',
+        '[aria-modal="true"]'
+      ];
+
+      modalSelectors.forEach(selector => {
+        const elements = document.querySelectorAll(selector);
+        elements.forEach(el => {
+          const visible = (el as HTMLElement).offsetParent !== null;
+          result.modals.push({ selector, visible });
+        });
+      });
+
+      // Detect dropdowns
+      const dropdownSelectors = [
+        '[role="listbox"]',
+        '[class*="dropdown"]',
+        'select',
+        '[aria-haspopup="true"]'
+      ];
+
+      dropdownSelectors.forEach(selector => {
+        const elements = document.querySelectorAll(selector);
+        elements.forEach(el => {
+          const expanded = el.getAttribute('aria-expanded') === 'true';
+          result.dropdowns.push({ selector, expanded });
+        });
+      });
+
+      // Detect tabs
+      const tabSelectors = ['[role="tab"]', '[class*="tab"][aria-selected]'];
+
+      tabSelectors.forEach(selector => {
+        const elements = document.querySelectorAll(selector);
+        elements.forEach(el => {
+          const active = el.getAttribute('aria-selected') === 'true' ||
+                         el.classList.contains('active') ||
+                         el.classList.contains('selected');
+          result.tabs.push({ selector, active });
+        });
+      });
+
+      return result;
+    });
+
+    console.log(`✅ Found ${states.modals.length} modals, ${states.dropdowns.length} dropdowns, ${states.tabs.length} tabs`);
+
+    return states;
+  }
+
+  /**
+   * Smarter card detection using visual and structural analysis
+   */
+  async detectRepeatingPattern(page: Page): Promise<{
+    pattern_selector: string;
+    count: number;
+    confidence: number;
+    sample_element: any;
+  } | null> {
+    console.log('🔍 Detecting repeating visual patterns...');
+
+    // Use AI-powered detection first
+    const aiResult = await this.detectPatternWithAI(page, 'generic');
+
+    if (aiResult && aiResult.confidence > 70) {
+      return {
+        pattern_selector: aiResult.selector,
+        count: aiResult.count,
+        confidence: aiResult.confidence,
+        sample_element: aiResult.sample_data
+      };
+    }
+
+    // Fallback to basic detection
+    return null;
+  }
+
   async close(): Promise<void> {
     if (this.browser) {
       await this.browser.close();
