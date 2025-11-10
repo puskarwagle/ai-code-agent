@@ -347,4 +347,221 @@ Create a step-by-step plan to achieve the user's goal.`
       warnings: ['Unable to generate detailed plan']
     };
   }
+
+  /**
+   * Create a generic, adaptive plan with phases and strategies
+   * This plan is less specific and more resilient to page changes
+   */
+  async createGenericPlan(intent: string, url: string, pageAnalysis: any): Promise<{
+    goal: string;
+    phases: Array<{
+      phase: string;
+      description: string;
+      strategies: string[];
+      fallbacks: string[];
+      required: boolean;
+    }>;
+    estimated_duration: string;
+    warnings?: string[];
+  }> {
+    const interactiveElements = pageAnalysis.interactive_elements || {};
+    const buttons = interactiveElements.buttons?.slice(0, 10).map((b: any) => b.text) || [];
+    const inputs = interactiveElements.inputs?.slice(0, 10).map((i: any) => `${i.label} (${i.type})`) || [];
+
+    const messages: DeepSeekMessage[] = [
+      {
+        role: 'system',
+        content: `You create GENERIC, ADAPTIVE execution plans for web automation.
+
+CRITICAL RULES:
+1. DO NOT specify exact selectors or button text - these change frequently
+2. Instead, describe STRATEGIES that work across similar sites
+3. Each phase should have PRIMARY strategy + FALLBACK strategies
+4. Focus on SEMANTIC patterns, not specific implementation
+5. Think like seek_impl.ts - detect patterns, not hardcode selectors
+
+EXAMPLE GENERIC PLAN:
+{
+  "goal": "Find and apply to software engineering jobs",
+  "phases": [
+    {
+      "phase": "SEARCH",
+      "description": "Search for jobs matching criteria",
+      "strategies": [
+        "Find search input (by placeholder text, label, or type)",
+        "Enter keywords and location",
+        "Submit search (button click or Enter key)"
+      ],
+      "fallbacks": [
+        "Navigate directly to pre-built search URL",
+        "Use site navigation to browse jobs"
+      ],
+      "required": true
+    },
+    {
+      "phase": "COLLECT_JOBS",
+      "description": "Find all job listings on page",
+      "strategies": [
+        "Detect repeating card/article pattern",
+        "Use data attributes to identify job cards",
+        "Look for list items with job metadata"
+      ],
+      "fallbacks": [
+        "Scrape visible job titles",
+        "Use site-specific known selectors"
+      ],
+      "required": true
+    }
+  ],
+  "estimated_duration": "5-10 minutes",
+  "warnings": ["May require login", "Some jobs may redirect externally"]
+}
+
+OUTPUT FORMAT: JSON only`
+      },
+      {
+        role: 'user',
+        content: `
+USER GOAL: ${intent}
+TARGET SITE: ${url}
+
+PAGE CONTEXT:
+- Title: ${pageAnalysis.metadata?.title || 'Unknown'}
+- Detected buttons: ${buttons.slice(0, 5).join(', ') || 'None'}
+- Detected inputs: ${inputs.slice(0, 5).join(', ') || 'None'}
+
+Create a GENERIC, ADAPTIVE plan with phases and strategies (not specific steps).
+Think about what PATTERNS to look for, not which exact elements to click.`
+      }
+    ];
+
+    const response = await this.chat(messages, { temperature: 0.5, max_tokens: 1500 });
+
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+    } catch (e) {
+      console.error('Failed to parse generic plan:', e);
+    }
+
+    // Fallback
+    return {
+      goal: intent,
+      phases: [
+        {
+          phase: 'NAVIGATE',
+          description: 'Navigate to the target site',
+          strategies: ['Open URL and verify page loads'],
+          fallbacks: ['Retry with different network settings'],
+          required: true
+        }
+      ],
+      estimated_duration: 'Unknown',
+      warnings: ['Unable to generate detailed plan']
+    };
+  }
+
+  /**
+   * Refine an existing plan based on user feedback
+   */
+  async refinePlan(
+    currentPlan: any,
+    userFeedback: string
+  ): Promise<any> {
+    const messages: DeepSeekMessage[] = [
+      {
+        role: 'system',
+        content: `You refine execution plans based on user feedback.
+
+Keep the same JSON structure but modify according to feedback.
+Add/remove/modify phases and strategies as needed.
+Maintain the GENERIC, ADAPTIVE approach (no specific selectors).`
+      },
+      {
+        role: 'user',
+        content: `
+CURRENT PLAN:
+${JSON.stringify(currentPlan, null, 2)}
+
+USER FEEDBACK:
+${userFeedback}
+
+Refine the plan based on this feedback. Output the updated plan in the same JSON format.`
+      }
+    ];
+
+    const response = await this.chat(messages, { temperature: 0.4, max_tokens: 1500 });
+
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+    } catch (e) {
+      console.error('Failed to parse refined plan:', e);
+    }
+
+    // Fallback - return original plan
+    return currentPlan;
+  }
+
+  /**
+   * Find alternative strategy when current approach fails
+   */
+  async findAlternativeStrategy(
+    phase: string,
+    error: string,
+    attemptedStrategies: string[]
+  ): Promise<{
+    alternative_strategy: string;
+    explanation: string;
+    confidence: 'high' | 'medium' | 'low';
+  }> {
+    const messages: DeepSeekMessage[] = [
+      {
+        role: 'system',
+        content: `You suggest alternative approaches when automation strategies fail.
+
+Think creatively about different ways to achieve the same goal.
+Consider different selectors, interactions, or workflows.
+
+OUTPUT FORMAT: JSON
+{
+  "alternative_strategy": "Description of new approach to try",
+  "explanation": "Why this might work better",
+  "confidence": "high|medium|low"
+}`
+      },
+      {
+        role: 'user',
+        content: `
+PHASE: ${phase}
+ERROR: ${error}
+
+ALREADY TRIED:
+${attemptedStrategies.map((s, i) => `${i + 1}. ${s}`).join('\n')}
+
+Suggest an alternative strategy that might work.`
+      }
+    ];
+
+    const response = await this.chat(messages, { temperature: 0.6, max_tokens: 500 });
+
+    try {
+      const jsonMatch = response.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+    } catch (e) {
+      // Fallback
+    }
+
+    return {
+      alternative_strategy: 'Manual intervention required',
+      explanation: 'Unable to find alternative approach automatically',
+      confidence: 'low'
+    };
+  }
 }

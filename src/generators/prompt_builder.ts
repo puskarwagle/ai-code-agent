@@ -298,4 +298,138 @@ Output the YAML and TypeScript code blocks now.
 
     return lines.join('\n');
   }
+
+  /**
+   * Build prompt for executing a generic strategy
+   * This is used for phase-based execution with adaptive strategies
+   */
+  buildStrategyExecutionPrompt(
+    phase: string,
+    strategy: string,
+    analysis: PageAnalysis,
+    context: {
+      goal: string;
+      completedPhases?: string[];
+      attemptedStrategies?: string[];
+    }
+  ): string {
+    const compressedContext = this.compressPageContext(analysis);
+
+    return `
+You are executing ONE STRATEGY for a bot automation phase. Output ONLY valid TypeScript code.
+
+═══════════════════════════════════════════════════════════════
+CONTEXT
+═══════════════════════════════════════════════════════════════
+
+USER GOAL: ${context.goal}
+CURRENT PHASE: ${phase}
+STRATEGY TO EXECUTE: ${strategy}
+
+CURRENT PAGE: ${analysis.metadata.title}
+PAGE URL: ${analysis.url}
+PAGE TYPE: ${compressedContext.page_purpose}
+
+COMPLETED PHASES:
+${context.completedPhases?.map((p, i) => `${i + 1}. ${p}`).join('\n') || 'None yet'}
+
+${context.attemptedStrategies && context.attemptedStrategies.length > 0 ? `
+ALREADY TRIED (these failed):
+${context.attemptedStrategies.map((s, i) => `${i + 1}. ${s}`).join('\n')}
+
+YOUR APPROACH MUST BE DIFFERENT FROM THE ABOVE!
+` : ''}
+
+═══════════════════════════════════════════════════════════════
+AVAILABLE ELEMENTS
+═══════════════════════════════════════════════════════════════
+
+${this.formatInteractiveElements(analysis.interactive_elements)}
+
+═══════════════════════════════════════════════════════════════
+CRITICAL RULES
+═══════════════════════════════════════════════════════════════
+
+1. Implement the STRATEGY, not specific selectors
+2. Use SEMANTIC discovery (find elements by their purpose, not hardcoded selectors)
+3. Try multiple selector patterns (data attributes, labels, placeholders, etc.)
+4. Return success/failure clearly
+5. Handle errors gracefully
+
+═══════════════════════════════════════════════════════════════
+OUTPUT FORMAT
+═══════════════════════════════════════════════════════════════
+
+Output TypeScript code that implements this strategy:
+
+\`\`\`typescript
+import { Page } from 'playwright';
+
+export async function executeStrategy(page: Page): Promise<{
+  success: boolean;
+  message: string;
+  data?: any;
+}> {
+  try {
+    // Implement the strategy: ${strategy}
+
+    // Example: If strategy is "Find search input by placeholder"
+    // const searchInput = await page.locator('input[placeholder*="search" i]').first();
+    // await searchInput.fill('keywords');
+
+    // Return success with details
+    return {
+      success: true,
+      message: 'Strategy executed successfully',
+      data: { /* any relevant data */ }
+    };
+
+  } catch (error) {
+    return {
+      success: false,
+      message: \`Strategy failed: \${error.message}\`
+    };
+  }
+}
+\`\`\`
+
+NOW GENERATE THE CODE FOR THIS STRATEGY: ${strategy}
+`;
+  }
+
+  /**
+   * Build prompt for discovering selectors for a specific pattern
+   */
+  buildSelectorDiscoveryPrompt(
+    pattern: string,
+    analysis: PageAnalysis,
+    examples?: string[]
+  ): string {
+    return `
+You are discovering CSS selectors for a specific pattern on a webpage.
+
+PATTERN TO FIND: ${pattern}
+
+CURRENT PAGE: ${analysis.metadata.title}
+URL: ${analysis.url}
+
+${examples && examples.length > 0 ? `
+EXAMPLE SELECTORS FROM SIMILAR SITES:
+${examples.map((ex, i) => `${i + 1}. ${ex}`).join('\n')}
+` : ''}
+
+AVAILABLE ELEMENTS:
+${this.formatInteractiveElements(analysis.interactive_elements)}
+
+OUTPUT FORMAT: JSON only
+{
+  "primary_selector": "Most reliable CSS selector",
+  "fallback_selectors": ["Alternative 1", "Alternative 2", "Alternative 3"],
+  "confidence": "high|medium|low",
+  "reasoning": "Why this selector pattern should work"
+}
+
+Provide selectors that will find: ${pattern}
+`;
+  }
 }

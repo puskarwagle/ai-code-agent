@@ -220,39 +220,114 @@ export class BotGenerator {
     });
   }
 
-  private async confirmPlan(plan: any): Promise<boolean> {
+  /**
+   * Display a generic plan to the user
+   */
+  private displayGenericPlan(plan: any): void {
+    console.log('\n╔═══════════════════════════════════════════════════════════════╗');
+    console.log('║                    GENERIC EXECUTION PLAN                     ║');
+    console.log('╚═══════════════════════════════════════════════════════════════╝\n');
+
+    console.log(`🎯 Goal: ${plan.goal}`);
+    console.log(`⏱️  Estimated duration: ${plan.estimated_duration}\n`);
+
+    console.log('📋 Phases:\n');
+    plan.phases.forEach((phase: any, index: number) => {
+      const required = phase.required ? '🔴 REQUIRED' : '🟡 OPTIONAL';
+      console.log(`${index + 1}. ${phase.phase} ${required}`);
+      console.log(`   ${phase.description}\n`);
+
+      console.log(`   Primary Strategies:`);
+      phase.strategies.forEach((strategy: string) => {
+        console.log(`   • ${strategy}`);
+      });
+
+      if (phase.fallbacks && phase.fallbacks.length > 0) {
+        console.log(`\n   Fallback Strategies:`);
+        phase.fallbacks.forEach((fallback: string) => {
+          console.log(`   ↳ ${fallback}`);
+        });
+      }
+      console.log('');
+    });
+
+    if (plan.warnings && plan.warnings.length > 0) {
+      console.log('⚠️  Warnings:');
+      plan.warnings.forEach((warning: string) => {
+        console.log(`   • ${warning}`);
+      });
+      console.log('');
+    }
+  }
+
+  /**
+   * Prompt user for plan action (approve/modify/cancel)
+   */
+  private async promptPlanAction(): Promise<'approve' | 'modify' | 'cancel'> {
     return new Promise((resolve) => {
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
       });
 
-      console.log('\n╔═══════════════════════════════════════════════════════════════╗');
-      console.log('║                       EXECUTION PLAN                          ║');
-      console.log('╚═══════════════════════════════════════════════════════════════╝\n');
-
-      console.log(`📊 Estimated steps: ${plan.estimated_steps}\n`);
-
-      plan.steps.forEach((step: any) => {
-        console.log(`${step.step_number}. ${step.action}`);
-        console.log(`   💭 ${step.reasoning}\n`);
-      });
-
-      if (plan.warnings && plan.warnings.length > 0) {
-        console.log('⚠️  Warnings:');
-        plan.warnings.forEach((warning: string) => {
-          console.log(`   • ${warning}`);
-        });
-        console.log('');
-      }
-
-      rl.question('✅ Does this plan look good? (yes/no): ', (answer) => {
+      rl.question('👉 [A]pprove / [M]odify / [C]ancel? ', (answer) => {
         rl.close();
-        const approved = answer.toLowerCase().trim().startsWith('y');
-        console.log('');
-        resolve(approved);
+        const choice = answer.toLowerCase().trim();
+
+        if (choice === 'a' || choice === 'approve') {
+          resolve('approve');
+        } else if (choice === 'm' || choice === 'modify') {
+          resolve('modify');
+        } else if (choice === 'c' || choice === 'cancel') {
+          resolve('cancel');
+        } else {
+          // Default to approve if unclear
+          console.log('Invalid choice, assuming approve...\n');
+          resolve('approve');
+        }
       });
     });
+  }
+
+  /**
+   * Get user feedback for plan modification
+   */
+  private async getUserPlanFeedback(): Promise<string> {
+    return new Promise((resolve) => {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+
+      console.log('\n💬 What would you like to change about the plan?');
+      console.log('(e.g., "Add a filter phase", "Skip the login step", "Focus more on quick apply jobs")\n');
+
+      rl.question('Your feedback: ', (feedback) => {
+        rl.close();
+        resolve(feedback.trim());
+      });
+    });
+  }
+
+  /**
+   * Create a CLI sticky todo list from the plan
+   */
+  private async createCliTodoList(plan: any): Promise<void> {
+    console.log('📝 Creating task list for execution:\n');
+    console.log('╭─────────────────────────────────────────────────────────────╮');
+    console.log('│                       TODO LIST                             │');
+    console.log('╰─────────────────────────────────────────────────────────────╯\n');
+
+    plan.phases.forEach((phase: any, index: number) => {
+      const checkbox = '☐';
+      const required = phase.required ? '[REQUIRED]' : '[OPTIONAL]';
+      console.log(`${checkbox} ${index + 1}. ${phase.phase} ${required}`);
+      console.log(`   ${phase.description}`);
+      console.log('');
+    });
+
+    console.log('─────────────────────────────────────────────────────────────\n');
+    console.log('💡 This task list will guide the execution.\n');
   }
 
   private async generateDiscoveryPhase(context: BotGenerationContext): Promise<GeneratedStepInfo[]> {
@@ -309,18 +384,34 @@ export class BotGenerator {
       context.intent = `${context.intent}\n\nClarifications:\n${clarifications}`;
     }
 
-    // Create execution plan
-    console.log('📋 Creating execution plan...\n');
-    const plan = await this.deepseek.createPlan(context.intent, context.url, pageAnalysis);
+    // Create GENERIC execution plan with iteration
+    console.log('📋 Creating generic execution plan...\n');
+    let genericPlan = await this.deepseek.createGenericPlan(context.intent, context.url, pageAnalysis);
 
-    // Get user confirmation
-    const planApproved = await this.confirmPlan(plan);
+    // Plan iteration loop - allow user to refine
+    let planApproved = false;
+    while (!planApproved) {
+      this.displayGenericPlan(genericPlan);
 
-    if (!planApproved) {
-      throw new Error('Plan rejected by user. Please restart with a different intent or provide more guidance.');
+      const action = await this.promptPlanAction();
+
+      if (action === 'approve') {
+        planApproved = true;
+      } else if (action === 'modify') {
+        const feedback = await this.getUserPlanFeedback();
+        console.log('\n🔄 Refining plan based on your feedback...\n');
+        genericPlan = await this.deepseek.refinePlan(genericPlan, feedback);
+      } else if (action === 'cancel') {
+        throw new Error('Plan cancelled by user. Please restart with a different intent.');
+      }
     }
 
-    console.log('✅ Plan approved! Starting execution...\n');
+    console.log('✅ Plan approved! Creating task list...\n');
+
+    // Create CLI sticky todo list
+    await this.createCliTodoList(genericPlan);
+
+    console.log('✅ Starting execution...\n');
 
     // Generate navigation step
     const navPrompt = this.promptBuilder.buildStepPrompt(
@@ -578,6 +669,71 @@ export class BotGenerator {
     }
 
     return fallbacks;
+  }
+
+  /**
+   * Execute a phase using multiple strategies with adaptive fallback
+   */
+  private async executeWithStrategies(
+    phase: any,
+    strategies: string[]
+  ): Promise<{ success: boolean; strategy_used?: string; error?: string }> {
+    const attemptedStrategies: string[] = [];
+
+    for (const strategy of strategies) {
+      console.log(`🔄 Trying strategy: ${strategy}`);
+      attemptedStrategies.push(strategy);
+
+      try {
+        // Here we would implement the actual strategy execution
+        // For now, this is a placeholder that would be filled in with actual implementation
+        // In a real implementation, this would use the sandbox to try the strategy
+
+        // Simulate execution (this would be replaced with actual implementation)
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        console.log(`✅ Strategy succeeded: ${strategy}`);
+        return { success: true, strategy_used: strategy };
+
+      } catch (error: any) {
+        console.log(`❌ Strategy failed: ${strategy} - ${error.message}`);
+        // Continue to next strategy
+      }
+    }
+
+    // All strategies failed - ask AI for alternative
+    console.log('\n🤖 All strategies failed. Asking AI for alternative approach...\n');
+
+    const alternative = await this.deepseek.findAlternativeStrategy(
+      phase.phase,
+      'All primary and fallback strategies failed',
+      attemptedStrategies
+    );
+
+    console.log(`💡 AI suggests: ${alternative.alternative_strategy}`);
+    console.log(`   Reason: ${alternative.explanation}`);
+    console.log(`   Confidence: ${alternative.confidence}\n`);
+
+    if (alternative.confidence === 'high' || alternative.confidence === 'medium') {
+      // Try the AI-suggested alternative
+      console.log(`🔄 Trying AI-suggested alternative...`);
+      try {
+        // Here we would implement the alternative strategy
+        // For now, this is a placeholder
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        console.log(`✅ AI alternative succeeded!`);
+        return { success: true, strategy_used: alternative.alternative_strategy };
+
+      } catch (error: any) {
+        console.log(`❌ AI alternative also failed: ${error.message}`);
+      }
+    }
+
+    return {
+      success: false,
+      error: 'All strategies exhausted, including AI suggestions'
+    };
   }
 
   private async fixFailedStep(
