@@ -1,0 +1,19 @@
+{
+  "url": "{{TARGET_URL}}",
+  "intent": "{{USER_INTENT}}",
+  "botName": "{{BOT_NAME}}",
+  "created_at": "{{TIMESTAMP}}",
+  "keywords": "",
+  "location": "",
+  "filters": {},
+  "options": {
+    "headless": false,
+    "slowMo": 0,
+    "timeout": 60000
+  },
+  "metadata": {
+    "version": "1.0.0",
+    "generator": "ai-web-agent",
+    "template_version": "1.0.0"
+  }
+}

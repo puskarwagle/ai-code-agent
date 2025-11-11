@@ -37,19 +37,19 @@ const QUICK_SITES: QuickSite[] = [
     defaultIntent: 'find and apply to jobs'
   },
   {
-    name: 'GitHub',
-    url: 'https://github.com',
-    defaultIntent: 'find trending repositories'
+    name: 'Seek',
+    url: 'https://seek.com.au',
+    defaultIntent: 'find and apply to jobs'
   },
   {
-    name: 'Twitter/X',
-    url: 'https://twitter.com',
-    defaultIntent: 'find and interact with tweets'
+    name: 'Glassdoor',
+    url: 'https://glassdoor.com',
+    defaultIntent: 'find and apply to jobs'
   },
   {
-    name: 'Reddit',
-    url: 'https://reddit.com',
-    defaultIntent: 'browse and interact with posts'
+    name: 'ZipRecruiter',
+    url: 'https://ziprecruiter.com',
+    defaultIntent: 'find and apply to jobs'
   }
 ];
 

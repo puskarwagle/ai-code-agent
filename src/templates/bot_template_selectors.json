@@ -1,0 +1,10 @@
+{
+  "discovered_selectors": {},
+  "fallback_selectors": {},
+  "site_specific": {},
+  "notes": "Selectors will be populated during bot generation and execution",
+  "metadata": {
+    "last_updated": null,
+    "discovered_by": "ai-analysis"
+  }
+}

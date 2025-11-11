@@ -1,0 +1,61 @@
+workflow_meta:
+  title: "{{BOT_NAME}}"
+  description: "{{INTENT}}"
+  start_step: "init_context"
+  created_by: "ai-web-agent"
+  created_at: "{{TIMESTAMP}}"
+  target_url: "{{TARGET_URL}}"
+
+steps_config:
+  # Step 0: Initialize bot context (configuration, selectors, tracking)
+  init_context:
+    step: 0
+    func: "init_context"
+    transitions:
+      context_ready: "navigate_to_homepage"
+      context_failed: "error_handler"
+    timeout: 30
+    on_timeout_event: "context_failed"
+
+  # Step 1: Navigate to the target URL and verify page loads
+  navigate_to_homepage:
+    step: 1
+    func: "navigate_to_homepage"
+    transitions:
+      homepage_loaded: "detect_login_state"
+      navigation_warning: "detect_login_state"
+      retry_navigation: "navigate_to_homepage"
+      navigation_failed: "error_handler"
+    timeout: 60
+    on_timeout_event: "retry_navigation"
+
+  # Step 2: Detect if user is logged in
+  detect_login_state:
+    step: 2
+    func: "detect_login_state"
+    transitions:
+      logged_in: "step_3"
+      login_required: "wait_for_manual_login"
+      detection_failed: "step_3"
+    timeout: 15
+    on_timeout_event: "detection_failed"
+
+  # Step 2.5: Wait for user to login manually
+  wait_for_manual_login:
+    step: 2.5
+    func: "wait_for_manual_login"
+    transitions:
+      login_complete: "step_3"
+    timeout: 300
+    on_timeout_event: "login_complete"
+
+  # Error handler for critical failures
+  error_handler:
+    step: 999
+    func: "handle_error"
+    transitions:
+      error_handled: "done"
+    timeout: 10
+    on_timeout_event: "error_handled"
+
+# AI-GENERATED STEPS WILL BE APPENDED BELOW
