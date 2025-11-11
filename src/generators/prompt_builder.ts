@@ -15,60 +15,61 @@ export interface StepContext {
 export class PromptBuilder {
   buildStepPrompt(
     intent: string,
-    analysis: PageAnalysis,
-    stepContext: StepContext
+    pageContext: { raw_html: string, url: string, title: string }, // New shape
+    stepContext: any
   ): string {
-    const compressedContext = this.compressPageContext(analysis);
+    const truncatedHtml = pageContext.raw_html.substring(0, 75000); // Truncate to avoid token limits
 
     return `
-You are generating ONE step of a Selenium/Playwright bot. Output ONLY valid TypeScript and YAML.
+You are an expert Selenium/Playwright bot developer. Your task is to analyze the provided HTML and generate the YAML and TypeScript for the SINGLE BEST NEXT STEP to achieve the user's goal.
 
 ═══════════════════════════════════════════════════════════════
 CRITICAL CONTEXT FOR STEP ${stepContext.stepNumber}
 ═══════════════════════════════════════════════════════════════
 
 USER GOAL: ${intent}
+${stepContext.additionalContext ? `USER GUIDANCE: ${stepContext.additionalContext}` : ''}
 
 PREVIOUS ACTION: ${stepContext.previousAction || 'None (this is the first step)'}
-CURRENT PAGE: ${analysis.metadata.title}
-PAGE URL: ${analysis.url}
-PAGE PURPOSE: ${compressedContext.page_purpose}
+CURRENT PAGE: ${pageContext.title}
+PAGE URL: ${pageContext.url}
 
 COMPLETED STEPS SO FAR:
-${stepContext.completedSteps?.map((s, i) => `${i + 1}. ${s}`).join('\n') || 'None'}
+${stepContext.completedSteps?.map((s: any, i: number) => `${i + 1}. ${s}`).join('\n') || 'None'}
 
 ═══════════════════════════════════════════════════════════════
-AVAILABLE ACTIONS FOR THIS STEP
+CURRENT PAGE HTML
 ═══════════════════════════════════════════════════════════════
 
-${this.generateActionSuggestions(analysis, intent)}
-
-═══════════════════════════════════════════════════════════════
-INTERACTIVE ELEMENTS YOU CAN USE
-═══════════════════════════════════════════════════════════════
-
-${this.formatInteractiveElements(analysis.interactive_elements)}
-
-═══════════════════════════════════════════════════════════════
-PAGE STRUCTURE
-═══════════════════════════════════════════════════════════════
-
-Main Content: ${analysis.page_structure.main_content_area}
-Navigation: ${analysis.page_structure.navigation}
-Forms: ${analysis.page_structure.forms.length} detected
-Data Patterns: ${analysis.data_patterns.map(p => `${p.type} (${p.count} items)`).join(', ')}
+\`\`\`html
+${truncatedHtml}
+\`\`\`
 
 ═══════════════════════════════════════════════════════════════
 CRITICAL RULES FOR THIS STEP
 ═══════════════════════════════════════════════════════════════
 
-1. Generate ONLY ONE atomic action for this step
-2. Use ONLY the selectors provided above (with fallback chains)
-3. MUST verify success with observable page change
-4. ALWAYS handle errors (yield 'element_not_found', 'timeout', etc.)
-5. Take screenshot on errors for AI diagnosis
-6. Use exponential backoff for retries
-7. Import from 'playwright' not 'selenium-webdriver'
+1.  **Analyze the HTML above.** Based on the user's goal and the completed steps, determine the single most logical next action.
+2.  **Generate ONE atomic action.** This action should be a single interaction (e.g., click, fill, select, wait).
+3.  **Generate YAML and TypeScript.** Follow the output format precisely.
+4.  **Verify success.** The generated code must include a way to verify the action was successful (e.g., \`waitForLoadState\`, \`waitForSelector\` for a new element).
+5.  **Handle errors.** The code must use try/catch and yield appropriate events on failure.
+
+═══════════════════════════════════════════════════════════════
+SELECTOR GENERATION RULES
+═══════════════════════════════════════════════════════════════
+
+1.  **Use REAL selectors from the HTML.** Do not invent or hallucinate selectors.
+2.  **PRIORITIZE stable selectors in this order:**
+    - 1. \`data-testid\`, \`data-qa\`, \`data-cy\`
+    - 2. \`aria-label\`, \`aria-labelledby\`
+    - 3. \`id\` (if it looks stable and not dynamically generated)
+    - 4. \`name\` (especially for form elements)
+    - 5. Robust \`class\` names that are not style-related.
+3.  **Your generated selector string MUST be valid and properly quoted.**
+    - GOOD: \`button[aria-label="Next page"]\`
+    - BAD: \`button[aria-label*=\`
+    - BAD: \`a[href=/jobs]\`
 
 ═══════════════════════════════════════════════════════════════
 OUTPUT FORMAT
@@ -101,7 +102,7 @@ export async function* function_name_here(ctx: any): AsyncGenerator<string, void
 
   try {
     // REQUIRED: Use page.waitForSelector as FIRST LINE
-    const element = await page.waitForSelector('your_selector_here', {
+    const element = await page.waitForSelector('YOUR_REAL_SELECTOR_FROM_HTML', {
       timeout: 10000,
       state: 'visible'
     });
@@ -131,169 +132,10 @@ export async function* function_name_here(ctx: any): AsyncGenerator<string, void
 }
 \`\`\`
 
-IMPORTANT:
-- ALWAYS use page.waitForSelector('selector', ...) as the FIRST LINE in try block
-- Do NOT use complex selector chains or variables for the primary selector
-- Put the actual selector string directly in waitForSelector()
-- Example: page.waitForSelector('[aria-label="Search"]', ...)
-
 ═══════════════════════════════════════════════════════════════
-NOW GENERATE STEP ${stepContext.stepNumber}
+NOW, ANALYZE THE HTML AND GENERATE THE CODE FOR STEP ${stepContext.stepNumber}
 ═══════════════════════════════════════════════════════════════
-
-Context: ${stepContext.context}
-
-Output the YAML and TypeScript code blocks now.
 `;
-  }
-
-  private compressPageContext(analysis: PageAnalysis): {
-    page_purpose: string;
-    available_actions: string[];
-  } {
-    const available_actions: string[] = [];
-
-    if (analysis.interactive_elements.inputs.length > 0) {
-      available_actions.push('fill_form', 'search');
-    }
-    if (analysis.interactive_elements.buttons.length > 0) {
-      available_actions.push('click_button', 'submit');
-    }
-    if (analysis.interactive_elements.links.length > 0) {
-      available_actions.push('navigate', 'follow_link');
-    }
-    if (analysis.interactive_elements.selects.length > 0) {
-      available_actions.push('select_option', 'filter');
-    }
-    if (analysis.data_patterns.length > 0) {
-      available_actions.push('extract_data', 'scrape_list');
-    }
-
-    // Determine page purpose based on structure
-    let page_purpose = 'general_webpage';
-
-    if (analysis.page_structure.forms.length > 0) {
-      const forms = analysis.page_structure.forms;
-      if (forms.some(f => f.inputs.some(i => i.type === 'password'))) {
-        page_purpose = 'login_page';
-      } else if (forms.some(f => f.inputs.some(i => i.type === 'search'))) {
-        page_purpose = 'search_page';
-      } else {
-        page_purpose = 'form_page';
-      }
-    } else if (analysis.data_patterns.some(p => p.type === 'cards' || p.type === 'list')) {
-      page_purpose = 'listing_page';
-    } else if (analysis.data_patterns.some(p => p.type === 'table')) {
-      page_purpose = 'data_table_page';
-    }
-
-    return { page_purpose, available_actions };
-  }
-
-  private generateActionSuggestions(analysis: PageAnalysis, intent: string): string {
-    const suggestions: string[] = [];
-
-    // Suggest actions based on available elements
-    if (analysis.interactive_elements.inputs.length > 0) {
-      const searchInput = analysis.interactive_elements.inputs.find(i =>
-        i.type === 'search' ||
-        i.attributes['name']?.toLowerCase().includes('search') ||
-        i.attributes['placeholder']?.toLowerCase().includes('search')
-      );
-
-      if (searchInput) {
-        suggestions.push(`• SEARCH: Fill search input "${searchInput.selector}" and submit`);
-      }
-
-      const textInputs = analysis.interactive_elements.inputs.filter(i =>
-        i.type === 'text' || i.type === 'email' || !i.type
-      );
-
-      if (textInputs.length > 0) {
-        suggestions.push(`• FILL FORM: ${textInputs.length} text inputs available`);
-      }
-    }
-
-    if (analysis.interactive_elements.buttons.length > 0) {
-      const submitBtn = analysis.interactive_elements.buttons.find(b =>
-        b.type === 'submit' ||
-        b.text?.toLowerCase().includes('submit') ||
-        b.text?.toLowerCase().includes('search') ||
-        b.text?.toLowerCase().includes('go')
-      );
-
-      if (submitBtn) {
-        suggestions.push(`• SUBMIT: Click "${submitBtn.text}" button (${submitBtn.selector})`);
-      }
-    }
-
-    if (analysis.interactive_elements.links.length > 0) {
-      const links = analysis.interactive_elements.links.slice(0, 5);
-      suggestions.push(`• NAVIGATE: ${links.length} links available`);
-    }
-
-    if (analysis.data_patterns.length > 0) {
-      suggestions.push(`• EXTRACT DATA: ${analysis.data_patterns.length} data patterns detected`);
-    }
-
-    if (suggestions.length === 0) {
-      suggestions.push('• WAIT: Page may still be loading, wait for elements');
-      suggestions.push('• SCROLL: Content may be below the fold');
-    }
-
-    return suggestions.join('\n');
-  }
-
-  private formatInteractiveElements(elements: PageAnalysis['interactive_elements']): string {
-    const lines: string[] = [];
-
-    // Format buttons
-    if (elements.buttons.length > 0) {
-      lines.push('BUTTONS:');
-      elements.buttons.slice(0, 10).forEach((btn, i) => {
-        lines.push(`  ${i + 1}. "${btn.text || '(no text)'}" [${btn.tagName}]`);
-        lines.push(`     Primary selector: ${btn.selectors.primary}`);
-        lines.push(`     Fallbacks: ${btn.selectors.fallbacks.slice(0, 2).join(', ')}`);
-        lines.push(`     Stability: ${btn.selectors.stability_score}/100`);
-        if (i < elements.buttons.length - 1) lines.push('');
-      });
-      lines.push('');
-    }
-
-    // Format inputs
-    if (elements.inputs.length > 0) {
-      lines.push('INPUTS:');
-      elements.inputs.slice(0, 10).forEach((input, i) => {
-        lines.push(`  ${i + 1}. [${input.type || 'text'}] "${input.label || input.attributes['placeholder'] || '(no label)'}"`);
-        lines.push(`     Primary selector: ${input.selectors.primary}`);
-        lines.push(`     Fallbacks: ${input.selectors.fallbacks.slice(0, 2).join(', ')}`);
-        lines.push(`     Name: ${input.attributes['name'] || 'N/A'}`);
-        if (i < elements.inputs.length - 1) lines.push('');
-      });
-      lines.push('');
-    }
-
-    // Format selects
-    if (elements.selects.length > 0) {
-      lines.push('SELECT DROPDOWNS:');
-      elements.selects.slice(0, 5).forEach((select, i) => {
-        lines.push(`  ${i + 1}. "${select.label || select.attributes['name'] || '(no label)'}"`);
-        lines.push(`     Selector: ${select.selectors.primary}`);
-      });
-      lines.push('');
-    }
-
-    // Format important links
-    if (elements.links.length > 0) {
-      lines.push(`LINKS: (showing first 5 of ${elements.links.length})`);
-      elements.links.slice(0, 5).forEach((link, i) => {
-        lines.push(`  ${i + 1}. "${link.text?.substring(0, 50) || link.href}"`);
-        lines.push(`     Href: ${link.href}`);
-        lines.push(`     Selector: ${link.selectors.primary}`);
-      });
-    }
-
-    return lines.join('\n');
   }
 
   /**

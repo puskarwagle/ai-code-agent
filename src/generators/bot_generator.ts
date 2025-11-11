@@ -3,7 +3,6 @@
  * Generates bots step-by-step with validation and adaptation
  */
 
-import { HTMLAnalyzer } from '../core/html_analyzer.js';
 import { DeepSeekClient } from '../core/deepseek_client.js';
 import { PromptBuilder } from './prompt_builder.js';
 import { SandboxExecutor } from '../executors/sandbox_executor.js';
@@ -13,9 +12,10 @@ import { writeFile, sanitizeBotName } from '../utils/file_helpers.js';
 import { BotStorageManager, BotMetadata } from '../utils/bot_storage.js';
 import * as yaml from 'js-yaml';
 import * as readline from 'readline';
+import * as fs from 'fs/promises';
 
 export class BotGenerator {
-  private analyzer: HTMLAnalyzer;
+
   private deepseek: DeepSeekClient;
   private promptBuilder: PromptBuilder;
   private sandbox: SandboxExecutor;
@@ -23,11 +23,6 @@ export class BotGenerator {
   private currentBotId: string | null = null;
 
   constructor(deepseekApiKey: string) {
-    this.analyzer = new HTMLAnalyzer({
-      include_hidden_elements: false,
-      detect_data_patterns: true,
-      capture_screenshots: false
-    });
     this.deepseek = new DeepSeekClient(deepseekApiKey);
     this.promptBuilder = new PromptBuilder();
     this.sandbox = new SandboxExecutor();
@@ -38,6 +33,7 @@ export class BotGenerator {
     url: string,
     intent: string,
     options?: {
+      botName?: string;
       allowManualLogin?: boolean;
       useSession?: boolean;
       existingBotId?: string;
@@ -73,6 +69,17 @@ export class BotGenerator {
       console.log('\n🤖 Starting Progressive Bot Generation...');
       console.log(`📍 Target URL: ${url}`);
       console.log(`🎯 User Intent: ${intent}\n`);
+
+      // Scaffold bot files
+      const botName = sanitizeBotName(options?.botName || intent);
+      const outputDir = `./generated_bots/${botName}`;
+      const tsContent = `// ${intent}\n\nimport { Page } from 'playwright';\n\n`;
+      const yamlContent = `workflow_meta:\n  title: "${intent}"\n  description: "A bot to ${intent}"\n  start_step: "step_1"\n\nsteps_config:\n`;
+      await writeFile(`${outputDir}/${botName}_impl.ts`, tsContent);
+      await writeFile(`${outputDir}/${botName}_steps.yaml`, yamlContent);
+      await writeFile(`${outputDir}/${botName}_selectors.json`, `{}`);
+      await writeFile(`${outputDir}/${botName}_config.json`, `{\n  "keywords": "software engineer",\n  "location": "New York"\n}`);
+      console.log(`📂 Created bot file templates in: ${outputDir}\n`);
     }
 
     // Create or restore context
@@ -106,15 +113,17 @@ export class BotGenerator {
         context.generated_steps.push(...discoverySteps);
 
         // Save initial metadata
-        await this.saveBotProgress(context, url, intent);
+        await this.saveBotProgress(context, url, intent, sanitizeBotName(options?.botName || intent));
       } else {
         // For existing bots, still need to navigate to the page
         console.log('🌐 Navigating to saved URL...\n');
         await this.sandbox.navigateToUrl(url);
         await new Promise(resolve => setTimeout(resolve, 2000));
 
-        // Check if login is needed (session might have expired)
-        const loginRequired = await this.sandbox.detectLoginRequired();
+        // Check if login is needed using AI
+        console.log('🤖 Analyzing page with AI to detect login requirement...');
+        const pageHtml = await this.sandbox.getPage().content();
+        const loginRequired = await this.deepseek.isLoginRequired(pageHtml);
 
         if (loginRequired) {
           console.log('🔐 Login required (session expired?) - waiting for manual login...\n');
@@ -141,14 +150,14 @@ export class BotGenerator {
       context.generated_steps.push(...workflowSteps);
 
       // Save progress after each phase
-      await this.saveBotProgress(context, url, intent);
+      await this.saveBotProgress(context, url, intent, existingBot?.name || sanitizeBotName(options?.botName || intent));
 
       // PHASE 3: Compile Bot
       console.log('\n═══════════════════════════════════════════════════════');
       console.log('PHASE 3: COMPILING BOT');
       console.log('═══════════════════════════════════════════════════════\n');
 
-      const botFiles = await this.compileBotFiles(context);
+      const botFiles = await this.compileBotFiles(context, existingBot?.name || sanitizeBotName(options?.botName || intent));
 
       // Mark bot as completed
       await this.storage.updateBotStatus(this.currentBotId!, 'completed');
@@ -167,7 +176,6 @@ export class BotGenerator {
       }
 
       await this.sandbox.close();
-      await this.analyzer.close();
     }
   }
 
@@ -497,8 +505,11 @@ export class BotGenerator {
     await this.sandbox.navigateToUrl(context.url);
     await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for page load
 
-    // Detect if login is required
-    const loginRequired = await this.sandbox.detectLoginRequired();
+    // Detect if login is required using AI
+    console.log('🤖 Analyzing page with AI to detect login requirement...');
+    const currentPage = this.sandbox.getPage();
+    const pageHtml = await currentPage.content();
+    const loginRequired = await this.deepseek.isLoginRequired(pageHtml);
 
     if (loginRequired) {
       console.log('🔐 Login detected - waiting for manual login...\n');
@@ -512,121 +523,67 @@ export class BotGenerator {
       console.log('✅ No login required (already logged in or public page)\n');
     }
 
-    // Analyze the page (use existing page to preserve login state)
-    const currentPage = this.sandbox.getPage();
-    const pageAnalysis = await this.analyzer.analyze(context.url, currentPage);
+    console.log('✅ Page loaded. Skipping discovery analysis for now.\n');
 
-    console.log('✅ Page loaded and analyzed\n');
-
-    // PHASE 0: Intent Analysis
-    console.log('═══════════════════════════════════════════════════════');
-    console.log('PHASE 0: INTENT ANALYSIS & PLANNING');
-    console.log('═══════════════════════════════════════════════════════\n');
-
-    console.log('🧠 Analyzing your intent...\n');
-    const intentAnalysis = await this.deepseek.analyzeIntent(context.intent, context.url, pageAnalysis);
-
-    console.log(`💡 Understood goal: ${intentAnalysis.understood_goal}`);
-    if (intentAnalysis.site_knowledge) {
-      console.log(`📚 Site knowledge: ${intentAnalysis.site_knowledge}`);
-    }
-    console.log(`🎯 Confidence: ${intentAnalysis.confidence}\n`);
-
-    // Ask clarifying questions if needed
-    if (intentAnalysis.clarifying_questions.length > 0) {
-      const answers = await this.askClarifyingQuestions(intentAnalysis.clarifying_questions);
-      // Update context with answers
-      const clarifications = Object.entries(answers)
-        .map(([q, a]) => `Q: ${q}\nA: ${a}`)
-        .join('\n');
-      context.intent = `${context.intent}\n\nClarifications:\n${clarifications}`;
-    }
-
-    // Create GENERIC execution plan with iteration
-    console.log('📋 Creating generic execution plan...\n');
-    let genericPlan = await this.deepseek.createGenericPlan(context.intent, context.url, pageAnalysis);
-
-    // Plan iteration loop - allow user to refine
-    let planApproved = false;
-    while (!planApproved) {
-      this.displayGenericPlan(genericPlan);
-
-      const action = await this.promptPlanAction();
-
-      if (action === 'approve') {
-        planApproved = true;
-      } else if (action === 'modify') {
-        const feedback = await this.getUserPlanFeedback();
-        console.log('\n🔄 Refining plan based on your feedback...\n');
-        genericPlan = await this.deepseek.refinePlan(genericPlan, feedback);
-      } else if (action === 'cancel') {
-        throw new Error('Plan cancelled by user. Please restart with a different intent.');
-      }
-    }
-
-    console.log('✅ Plan approved! Creating task list...\n');
-
-    // Create CLI sticky todo list
-    await this.createCliTodoList(genericPlan);
-
-    console.log('✅ Starting execution...\n');
-
-    // Generate navigation step
-    const navPrompt = this.promptBuilder.buildStepPrompt(
-      context.intent,
-      pageAnalysis,
-      {
-        stepNumber: 1,
-        context: 'Navigate to the target URL and verify it loads successfully',
-        completedSteps: []
-      }
-    );
-
-    const navStep = await this.deepseek.generateStep(navPrompt);
-
-    steps.push({
+    // Create a dummy navigation step to ensure the bot starts correctly.
+    // The main workflow will handle the real logic from here.
+    const navStep: GeneratedStepInfo = {
       step_number: 1,
-      yaml: navStep.yaml,
-      typescript: navStep.typescript,
-      action_description: 'Navigate to URL',
+      yaml: `
+step_1:
+  step: 1
+  func: "navigate_to_start"
+  transitions:
+    success_event: "step_2"
+    error: "error_handler"
+`,
+      typescript: `
+import { Page } from 'playwright';
+export async function* navigate_to_start(ctx: any): AsyncGenerator<string, void> {
+  console.log('Navigating to start URL...');
+  await ctx.page.goto('${context.url}', { waitUntil: 'networkidle' });
+  yield 'success_event';
+}`,
+      action_description: `Navigate to ${context.url}`,
       execution_result: {
         success: true,
         page_state: await this.sandbox.capturePageState()
       }
-    });
+    };
 
+    steps.push(navStep);
     return steps;
   }
 
   /**
-   * Generate workflow using ITERATIVE MICRO-PLANS
-   * Makes small plans (3-5 steps), executes them, makes another plan, repeat
+   * Generate workflow using an iterative, single-step generation process.
+   * In each loop, it analyzes the current page state and generates only the next single best step.
    */
   private async generateWorkflowPhase(context: BotGenerationContext, additionalContext?: string): Promise<GeneratedStepInfo[]> {
     const steps: GeneratedStepInfo[] = [];
-    const maxMicroPlans = 20; // Max 20 micro-plans (20 * 5 = 100 steps max)
-    let microPlanCount = 0;
+    const maxSteps = 30; // Set a hard limit for total steps
+    let stepCounter = 0;
 
     console.log('\n╔═══════════════════════════════════════════════════════════════╗');
-    console.log('║           ITERATIVE MICRO-PLAN EXECUTION                      ║');
+    console.log('║           ITERATIVE STEP-BY-STEP EXECUTION                  ║');
     console.log('╚═══════════════════════════════════════════════════════════════╝\n');
-
     console.log('🎯 GOAL: Find and apply to jobs');
-    console.log('📋 Strategy: Make small plans (3-5 steps), execute, repeat\n');
+    console.log('📋 Strategy: Analyze page, generate one step, execute, repeat.\n');
 
-    while (microPlanCount < maxMicroPlans) {
-      microPlanCount++;
+    while (stepCounter < maxSteps) {
+      const currentStepNumber = context.generated_steps.length + 1;
+      stepCounter++;
 
       console.log(`\n═══════════════════════════════════════════════════════`);
-      console.log(`MICRO-PLAN #${microPlanCount}`);
+      console.log(`GENERATING STEP #${currentStepNumber}`);
       console.log(`═══════════════════════════════════════════════════════\n`);
 
       // Get current state
       const currentPage = this.sandbox.getPage();
       const currentPageState = await this.sandbox.capturePageState();
-      const completedActions = context.generated_steps.map(s => s.action_description);
+      const completedSteps = context.generated_steps.map(s => s.action_description);
 
-      // Check if goal achieved
+      // Check if goal is already fulfilled
       const isFulfilled = await this.deepseek.isIntentFulfilled(context.intent, {
         title: currentPageState.title,
         url: currentPageState.url,
@@ -634,133 +591,132 @@ export class BotGenerator {
       });
 
       if (isFulfilled) {
-        console.log('🎉 GOAL ACHIEVED! Jobs should be applied to.\n');
+        console.log('🎉 GOAL ACHIEVED! The user\'s intent has been fulfilled.\n');
         break;
       }
 
-      // Analyze page
-      console.log('🔍 Analyzing current page...');
-      let pageAnalysis = await this.analyzer.analyze(currentPageState.url, currentPage);
+      // Get raw HTML and generate the next step in one AI call
+      console.log('🤖 Analyzing page and generating next action...');
+      const pageHtml = await currentPage.content();
 
-      // If analyzer found very few elements, use AI fallback
-      const totalElements =
-        pageAnalysis.interactive_elements.buttons.length +
-        pageAnalysis.interactive_elements.inputs.length +
-        pageAnalysis.interactive_elements.links.length;
-
-      if (totalElements < 5) {
-        console.log('⚠️  HTML Analyzer found few elements, using AI fallback...');
-        const html = await currentPage.content();
-        const aiAnalysis = await this.deepseek.analyzeRawHTML(
-          html,
-          context.intent,
-          completedActions[completedActions.length - 1] || 'Starting'
-        );
-
-        console.log(`AI Analysis: ${aiAnalysis.can_proceed ? '✅ Can proceed' : '❌ Cannot proceed'}`);
-        console.log(`Next actions: ${aiAnalysis.next_actions.join(', ')}`);
-        console.log(`Selectors found: ${aiAnalysis.selectors_found.length}`);
-
-        if (!aiAnalysis.can_proceed) {
-          console.log('❌ AI says cannot proceed. Stopping.\n');
-          break;
-        }
-      }
-
-      // Create micro-plan (3-5 steps)
-      console.log('🤖 Creating micro-plan (3-5 steps)...\n');
-      const microPlan = await this.deepseek.createMicroPlan(
+      const stepPrompt = this.promptBuilder.buildStepPrompt(
         context.intent,
-        currentPageState.url,
-        pageAnalysis,
-        completedActions
+        {
+          // We now pass raw HTML and other context instead of a full analysis object
+          raw_html: pageHtml,
+          url: currentPageState.url,
+          title: currentPageState.title
+        },
+        {
+          stepNumber: currentStepNumber,
+          previousAction: completedSteps[completedSteps.length - 1],
+          context: `Based on the current page HTML, decide the single best next action to achieve the goal: ${context.intent}.`,
+          completedSteps,
+        }
       );
 
-      // Display micro-plan as TODO
-      console.log('📝 TODO (this micro-plan):\n');
-      microPlan.steps.forEach((step, idx) => {
-        console.log(`   ☐ ${idx + 1}. ${step.action}`);
-        if (step.selector) {
-          console.log(`      Selector: ${step.selector}`);
-        }
-        console.log(`      Test: ${step.test_criteria}`);
-        console.log('');
-      });
-      console.log(`⏱️  Estimated time: ${microPlan.estimated_time}\n`);
+      const generatedStep = await this.deepseek.generateStep(stepPrompt);
+      const actionDescription = this.extractActionDescription(generatedStep) || `Generated Step ${currentStepNumber}`;
 
-      // Ask user approval for this micro-plan
-      const approved = await this.confirmMicroPlan();
+      console.log(`💡 AI suggests next action: ${actionDescription}`);
 
+      // Ask user for approval
+      const approved = await this.confirmNextStep(actionDescription);
       if (!approved) {
-        console.log('❌ Micro-plan rejected. Stopping.\n');
+        console.log('❌ Step rejected by user. Stopping generation.\n');
         break;
       }
 
-      // Execute each step in micro-plan
-      for (const planStep of microPlan.steps) {
-        console.log(`\n🔧 Executing: ${planStep.action}...`);
+      // Execute the generated step
+      console.log(`\n🔧 Executing: ${actionDescription}...`);
+      const executionResult = await this.executeGeneratedStep(
+        generatedStep.typescript,
+        this.extractFunctionName(generatedStep.typescript)
+      );
 
-        // Generate code for this step
-        const completedSteps = context.generated_steps.map(s => s.action_description);
-        const stepPrompt = this.promptBuilder.buildStepPrompt(
-          context.intent,
-          pageAnalysis,
-          {
-            stepNumber: context.generated_steps.length + 1,
-            previousAction: completedSteps[completedSteps.length - 1],
-            context: planStep.action + (planStep.selector ? `\nUse selector: ${planStep.selector}` : ''),
-            completedSteps
-          }
-        );
+// ... (rest of the file)
 
-        const generatedStep = await this.deepseek.generateStep(stepPrompt);
+      if (executionResult.success) {
+        console.log(`✅ ${actionDescription} - SUCCESS\n`);
+        const newStep: GeneratedStepInfo = {
+          step_number: currentStepNumber,
+          yaml: generatedStep.yaml,
+          typescript: generatedStep.typescript,
+          action_description: actionDescription,
+          execution_result: executionResult
+        };
+        steps.push(newStep);
+        context.generated_steps.push(newStep);
 
-        // Execute
-        const executionResult = await this.executeGeneratedStep(
-          generatedStep.typescript,
-          this.extractFunctionName(generatedStep.typescript)
-        );
+        // Commit the successful step to the bot files
+        const botName = sanitizeBotName(context.intent);
+        const outputDir = `./generated_bots/${botName}`;
 
-        if (executionResult.success) {
-          console.log(`✅ ${planStep.action} - SUCCESS\n`);
+        // 1. Append to TypeScript implementation file
+        const tsImplPath = `${outputDir}/${botName}_impl.ts`;
+        await fs.appendFile(tsImplPath, `\n${newStep.typescript}\n`);
 
-          steps.push({
-            step_number: context.generated_steps.length + 1,
-            yaml: generatedStep.yaml,
-            typescript: generatedStep.typescript,
-            action_description: planStep.action,
-            execution_result: executionResult
-          });
+        // 2. Update YAML workflow file
+        const yamlPath = `${outputDir}/${botName}_steps.yaml`;
+        try {
+            const yamlFileContent = await fs.readFile(yamlPath, 'utf8');
+            const mainWorkflow = yaml.load(yamlFileContent) as any;
+            const stepWorkflow = yaml.load(newStep.yaml) as any;
+            
+            const stepKey = Object.keys(stepWorkflow)[0];
+            if (stepKey) {
+                mainWorkflow.steps_config[stepKey] = stepWorkflow[stepKey];
+                
+                // Link previous step to this one
+                if (newStep.step_number > 1) {
+                    const prevStepKey = `step_${newStep.step_number - 1}`;
+                    if (mainWorkflow.steps_config[prevStepKey]) {
+                        mainWorkflow.steps_config[prevStepKey].transitions.success_event = stepKey;
+                    }
+                }
+            }
+            
+            const updatedYamlContent = yaml.dump(mainWorkflow);
+            await writeFile(yamlPath, updatedYamlContent);
+            console.log(`✅ Step ${newStep.step_number} committed to workflow.`);
 
-          context.generated_steps.push(steps[steps.length - 1]);
-        } else {
-          console.log(`❌ ${planStep.action} - FAILED: ${executionResult.error}\n`);
-          console.log('🔄 Skipping rest of micro-plan and creating new one...\n');
-          break; // Skip rest of this micro-plan, make new one
+        } catch (e) {
+            console.error(`❌ Failed to update YAML file:`, e);
         }
 
-        // Small delay
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        currentStepNumber++;
+      } else {
+        console.log(`❌ ${actionDescription} - FAILED: ${executionResult.error}\n`);
+        console.log('🔄 The AI will re-evaluate the page on the next loop to try a different approach.\n');
+        // We don't break, allowing the loop to try again with the new page state
       }
 
-      // Save progress after each micro-plan
+      // Save progress and wait
       await this.saveBotProgress(context, context.url, context.intent);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    if (stepCounter >= maxSteps) {
+      console.log('⚠️  Maximum step limit reached. Stopping generation.');
     }
 
     return steps;
   }
 
   /**
-   * Confirm micro-plan with user
+   * Confirm the next step with the user
    */
-  private async confirmMicroPlan(): Promise<boolean> {
+  private async confirmNextStep(action: string): Promise<boolean> {
     return new Promise((resolve) => {
       const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
       });
 
-      rl.question('👉 Execute this micro-plan? [Y/n]: ', (answer) => {
+      console.log('\nNext Action Proposed:');
+      console.log(`   ➡️  ${action}\n`);
+
+      rl.question('👉 Execute this step? [Y/n]: ', (answer) => {
         rl.close();
         const approved = !answer.trim() || answer.toLowerCase().trim().startsWith('y');
         console.log('');
@@ -1060,73 +1016,19 @@ export class BotGenerator {
     return funcName.replace(/_/g, ' ');
   }
 
-  private async compileBotFiles(context: BotGenerationContext): Promise<BotFiles> {
-    const botName = sanitizeBotName(context.intent);
+  private async compileBotFiles(context: BotGenerationContext, botName: string): Promise<BotFiles> {
 
     // Compile YAML workflow
     const workflowConfig: any = {
-      workflow_meta: {
-        title: context.intent,
-        description: `Bot generated for: ${context.intent}`,
-        start_step: 'step_1'
-      },
-      steps_config: {}
-    };
-
-    // Parse and merge all step YAML configs
-    for (const step of context.generated_steps) {
-      try {
-        const stepConfig = yaml.load(step.yaml) as any;
-        const stepKey = Object.keys(stepConfig)[0];
-        workflowConfig.steps_config[stepKey] = stepConfig[stepKey];
-      } catch (error) {
-        console.warn(`Failed to parse YAML for step ${step.step_number}:`, error);
-      }
-    }
-
-    // Add done step
-    const lastStep = context.generated_steps[context.generated_steps.length - 1];
-    if (lastStep) {
-      const lastStepKey = `step_${lastStep.step_number}`;
-      if (workflowConfig.steps_config[lastStepKey]) {
-        workflowConfig.steps_config[lastStepKey].transitions.success_event = 'done';
-      }
-    }
-
-    workflowConfig.steps_config['done'] = {
-      step: 999,
-      func: 'done',
-      transitions: {},
-      timeout: 0,
-      on_timeout_event: 'done'
-    };
-
-    const yamlContent = yaml.dump(workflowConfig);
-
-    // Compile TypeScript implementation
-    const tsContent = `/**
- * ${context.intent}
- * Generated by AI Web Agent
- */
-
-import { Page } from 'playwright';
-
-${context.generated_steps.map(step => step.typescript).join('\n\n')}
-
-export async function* done(ctx: any): AsyncGenerator<string, void> {
-  console.log('✅ Bot workflow complete!');
-  yield 'done';
-}
-`;
-
+//...
     // Save files
     const outputDir = `./generated_bots/${botName}`;
-    await writeFile(`${outputDir}/workflow.yaml`, yamlContent);
-    await writeFile(`${outputDir}/${botName}.ts`, tsContent);
+    await writeFile(`${outputDir}/${botName}_steps.yaml`, yamlContent);
+    await writeFile(`${outputDir}/${botName}_impl.ts`, tsContent);
 
     console.log(`📁 Bot files saved to: ${outputDir}`);
-    console.log(`   • workflow.yaml`);
-    console.log(`   • ${botName}.ts\n`);
+    console.log(`   • ${botName}_steps.yaml`);
+    console.log(`   • ${botName}_impl.ts\n`);
 
     return {
       yaml: yamlContent,
@@ -1135,10 +1037,8 @@ export async function* done(ctx: any): AsyncGenerator<string, void> {
     };
   }
 
-  private async saveBotProgress(context: BotGenerationContext, url: string, intent: string): Promise<void> {
+  private async saveBotProgress(context: BotGenerationContext, url: string, intent: string, botName: string): Promise<void> {
     if (!this.currentBotId) return;
-
-    const botName = sanitizeBotName(intent);
 
     const metadata: BotMetadata = {
       id: this.currentBotId,
@@ -1158,8 +1058,8 @@ export async function* done(ctx: any): AsyncGenerator<string, void> {
         execution_result: s.execution_result
       })),
       user_feedback: [],
-      yaml_path: `./generated_bots/${botName}/workflow.yaml`,
-      typescript_path: `./generated_bots/${botName}/${botName}.ts`,
+      yaml_path: `./generated_bots/${botName}/${botName}_steps.yaml`,
+      typescript_path: `./generated_bots/${botName}/${botName}_impl.ts`,
       context_path: `./generated_bots/${botName}/context.json`
     };
 

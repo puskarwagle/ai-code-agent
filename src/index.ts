@@ -13,6 +13,7 @@ import * as readline from 'readline';
 interface UserInput {
   url: string;
   intent: string;
+  botName?: string;
   existingBotId?: string;
   additionalContext?: string;
   mode: 'new' | 'continue';
@@ -131,9 +132,10 @@ async function promptUser(generator: BotGenerator): Promise<UserInput> {
     intent = await question('🎯 What should the bot do? ');
   }
 
+  const botName = await question('🤖 Give your bot a name (e.g., "linkedin-job-applier"): ');
   rl.close();
 
-  return { mode: 'new', url, intent };
+  return { mode: 'new', url, intent, botName };
 }
 
 async function main() {
@@ -149,6 +151,7 @@ async function main() {
 
     let url: string;
     let intent: string;
+    let botName: string | undefined;
     let existingBotId: string | undefined;
     let additionalContext: string | undefined;
 
@@ -165,6 +168,7 @@ async function main() {
       const userInput = await promptUser(generator);
       url = userInput.url;
       intent = userInput.intent;
+      botName = userInput.botName;
       existingBotId = userInput.existingBotId;
       additionalContext = userInput.additionalContext;
     }
@@ -177,6 +181,7 @@ async function main() {
 
     // Generate bot
     const botFiles = await generator.generateBot(url, intent, {
+      botName,
       existingBotId,
       additionalContext,
       useSession: true,

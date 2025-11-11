@@ -155,70 +155,7 @@ export class SandboxExecutor {
     return { title, url, html };
   }
 
-  async detectLoginRequired(): Promise<boolean> {
-    if (!this.page) throw new Error('Sandbox not initialized');
 
-    // Check for common login/signup indicators
-    const loginSelectors = [
-      'button:has-text("Log in")',
-      'button:has-text("Login")',
-      'button:has-text("Sign in")',
-      'button:has-text("Sign up")',
-      'a:has-text("Log in")',
-      'a:has-text("Login")',
-      'a:has-text("Sign in")',
-      'a:has-text("Sign up")',
-      'input[type="password"]',
-      'input[name="password"]',
-      'input[name="email"][type="email"]',
-      'form[action*="login"]',
-      'form[action*="signin"]',
-      '[class*="login"]',
-      '[class*="signin"]',
-      '[id*="login"]',
-      '[id*="signin"]'
-    ];
-
-    // Check if any login indicators are present
-    for (const selector of loginSelectors) {
-      try {
-        const element = await this.page.locator(selector).first().isVisible({ timeout: 1000 });
-        if (element) {
-          console.log(`🔍 Login indicator found: ${selector}`);
-          return true;
-        }
-      } catch {
-        // Element not found, continue
-      }
-    }
-
-    // Check for common "logged in" indicators
-    const loggedInSelectors = [
-      'button:has-text("Log out")',
-      'button:has-text("Logout")',
-      'button:has-text("Sign out")',
-      'a:has-text("Profile")',
-      'a:has-text("Account")',
-      'a:has-text("Settings")',
-      '[class*="avatar"]',
-      '[class*="profile-pic"]'
-    ];
-
-    for (const selector of loggedInSelectors) {
-      try {
-        const element = await this.page.locator(selector).first().isVisible({ timeout: 1000 });
-        if (element) {
-          console.log(`✅ Already logged in (found: ${selector})`);
-          return false;
-        }
-      } catch {
-        // Element not found, continue
-      }
-    }
-
-    // Default: assume login might be needed
-    return true;
-  }
 
   async captureScreenshot(): Promise<Buffer> {
     if (!this.page) throw new Error('Sandbox not initialized');

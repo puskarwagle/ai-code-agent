@@ -19,7 +19,7 @@ export interface BotMetadata {
   // Generation context
   current_step: number;
   total_steps: number;
-  generated_steps: Array<{
+  generated_steps?: Array<{
     step_number: number;
     action_description: string;
     yaml: string;
@@ -61,34 +61,25 @@ export class BotStorageManager {
   async saveBotMetadata(metadata: BotMetadata): Promise<void> {
     await this.initialize();
 
+    // Create a lightweight version of the metadata for the main list
+    const lightweightMetadata = { ...metadata };
+    delete (lightweightMetadata as any).generated_steps; // Remove heavy data
+
     // Load existing metadata
     const data = JSON.parse(await readFile(this.metadataFile));
 
     // Update or add bot
     const existingIndex = data.bots.findIndex((b: BotMetadata) => b.id === metadata.id);
     if (existingIndex >= 0) {
-      data.bots[existingIndex] = metadata;
+      data.bots[existingIndex] = lightweightMetadata;
     } else {
-      data.bots.push(metadata);
+      data.bots.push(lightweightMetadata);
     }
 
     // Sort by updated_at (most recent first)
     data.bots.sort((a: BotMetadata, b: BotMetadata) => b.updated_at - a.updated_at);
 
     await writeFile(this.metadataFile, JSON.stringify(data, null, 2));
-
-    // Save detailed context separately
-    const botDir = path.join(this.storageDir, metadata.name);
-    await ensureDir(botDir);
-    await writeFile(
-      path.join(botDir, 'context.json'),
-      JSON.stringify({
-        original_intent: metadata.original_intent,
-        generated_steps: metadata.generated_steps,
-        user_feedback: metadata.user_feedback,
-        current_step: metadata.current_step
-      }, null, 2)
-    );
 
     console.log(`💾 Bot metadata saved: ${metadata.name}`);
   }
